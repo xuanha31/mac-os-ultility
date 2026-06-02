@@ -1,0 +1,6 @@
+# Chuẩn hoá: mọi file text dùng LF trong repo (tốt cho macOS/Linux toolchain).
+* text=auto eol=lf
+
+*.swift text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf

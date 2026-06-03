@@ -50,17 +50,17 @@ Dùng `URLSession` async + `Codable` (không cần SDK nặng). Token (PAT) lưu
 
 | ID | Task | Trạng thái | Ghi chú |
 |----|------|-----------|---------|
-| GIT-01 | `LocalRepoScanner`: quét `.git`, đọc branch/ahead-behind | ⬜ TODO | |
-| GIT-02 | `git fetch` định kỳ + parse status | ⬜ TODO | |
-| GIT-03 | `RepoCorrelator`: parse origin URL → host+owner/repo | ⬜ TODO | |
-| GIT-04 | Protocol `GitHostProvider` chung | ⬜ TODO | |
-| GIT-05 | `GitHubProvider`: list PR + mergeable + CI | ⬜ TODO | |
-| GIT-06 | `GitHubProvider`: merge (merge/squash/rebase) | ⬜ TODO | |
-| GIT-07 | `GitLabProvider`: list MR + pipeline | ⬜ TODO | |
-| GIT-08 | `GitLabProvider`: merge (+squash, when pipeline succeeds) | ⬜ TODO | |
-| GIT-09 | Lưu PAT vào Keychain (GitHub + GitLab) | ⬜ TODO | |
-| GIT-10 | Auto-scan timer + ETag/conditional request | ⬜ TODO | |
-| GIT-11 | UI master-detail: list repo (badge MR/PR + CI) + chi tiết | ⬜ TODO | |
-| GIT-12 | Dialog xác nhận merge (branch, CI, conflict, chọn method) | ⬜ TODO | |
-| GIT-13 | Chỉ hiện method merge nền tảng cho phép | ⬜ TODO | |
-| GIT-14 | Xử lý sleep/wake + timeout cho mọi network call | ⬜ TODO | |
+| GIT-01 | `LocalRepoScanner`: quét `.git`, đọc branch/ahead-behind | 🟦 IN_PROGRESS | `LocalRepoScanner.swift` |
+| GIT-02 | `git fetch` định kỳ + parse status | 🟦 IN_PROGRESS | `GitCLI.swift` |
+| GIT-03 | `RepoCorrelator`: parse origin URL → host+owner/repo | 🟦 IN_PROGRESS | `RepoCorrelator.swift` |
+| GIT-04 | Protocol `GitHostProvider` chung | 🟦 IN_PROGRESS | `GitHostProvider.swift` |
+| GIT-05 | `GitHubProvider`: list PR + mergeable + CI | 🟦 IN_PROGRESS | `GitHubProvider.swift` |
+| GIT-06 | `GitHubProvider`: merge (merge/squash/rebase) | 🟦 IN_PROGRESS | `GitHubProvider.merge()` |
+| GIT-07 | `GitLabProvider`: list MR + pipeline | 🟦 IN_PROGRESS | `GitLabProvider.swift` |
+| GIT-08 | `GitLabProvider`: merge (+squash, when pipeline succeeds) | 🟦 IN_PROGRESS | `GitLabProvider.merge()` |
+| GIT-09 | Lưu PAT vào Keychain (GitHub + GitLab) | 🟦 IN_PROGRESS | `GitCredentials.swift` |
+| GIT-10 | Auto-scan timer + ETag/conditional request | 🟦 IN_PROGRESS | `ETagCache.swift` + `GitViewModel.toggleAutoScan()` |
+| GIT-11 | UI master-detail: list repo (badge MR/PR + CI) + chi tiết | 🟦 IN_PROGRESS | `GitView.swift` |
+| GIT-12 | Dialog xác nhận merge (branch, CI, conflict, chọn method) | 🟦 IN_PROGRESS | `MergeSheet` |
+| GIT-13 | Chỉ hiện method merge nền tảng cho phép | 🟦 IN_PROGRESS | `allowedMethods` từ API |
+| GIT-14 | Xử lý sleep/wake + timeout cho mọi network call | 🟦 IN_PROGRESS | `SleepWakeCoordinator` + 30s timeout |

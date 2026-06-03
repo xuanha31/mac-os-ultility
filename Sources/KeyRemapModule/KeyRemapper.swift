@@ -9,11 +9,34 @@ import Core
 public struct KeyRemapper {
 
     /// Mã HID usage (page 0x07 — keyboard), dạng `0x700000000 | usageID`.
-    public enum HIDKey: UInt64 {
+    public enum HIDKey: UInt64, CaseIterable, Identifiable, CustomStringConvertible {
         case leftCommand  = 0x7000000E3
         case rightCommand = 0x7000000E7
         case leftShift    = 0x7000000E1
         case rightShift   = 0x7000000E5
+        case leftControl  = 0x7000000E0
+        case rightControl = 0x7000000E4
+        case leftOption   = 0x7000000E2
+        case rightOption  = 0x7000000E6
+        case capsLock     = 0x700000039
+        case fn           = 0xFF0000003
+
+        public var id: UInt64 { rawValue }
+
+        public var description: String {
+            switch self {
+            case .leftCommand:  return "Command (trái)"
+            case .rightCommand: return "Command (phải)"
+            case .leftShift:    return "Shift (trái)"
+            case .rightShift:   return "Shift (phải)"
+            case .leftControl:  return "Control (trái)"
+            case .rightControl: return "Control (phải)"
+            case .leftOption:   return "Option (trái)"
+            case .rightOption:  return "Option (phải)"
+            case .capsLock:     return "Caps Lock"
+            case .fn:           return "Fn"
+            }
+        }
     }
 
     public enum KeyRemapError: Error, CustomStringConvertible {
@@ -33,6 +56,12 @@ public struct KeyRemapper {
     @discardableResult
     public func swapCommandShift() throws -> String {
         try run(json: KeyRemapper.swapCommandShiftJSON)
+    }
+
+    /// Áp dụng danh sách remap tùy chỉnh.
+    @discardableResult
+    public func applyCustomMapping(_ pairs: [(HIDKey, HIDKey)]) throws -> String {
+        try run(json: KeyRemapper.buildMappingJSON(pairs))
     }
 
     /// Khôi phục mặc định (xoá mọi remap).

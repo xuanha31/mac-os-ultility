@@ -26,12 +26,12 @@ Quản lý nhiều SSH session: lưu cấu hình host, mở terminal, exec lện
 
 | ID | Task | Trạng thái | Ghi chú |
 |----|------|-----------|---------|
-| SSH-01 | Model `SSHProfile` + lưu/đọc Keychain | ⬜ TODO | |
-| SSH-02 | Tích hợp Citadel: connect bằng password | ⬜ TODO | |
-| SSH-03 | Connect bằng private key (+ passphrase) | ⬜ TODO | |
-| SSH-04 | Tích hợp SwiftTerm: terminal tương tác | ⬜ TODO | |
-| SSH-05 | Quản lý nhiều session/tab | ⬜ TODO | |
-| SSH-06 | Exec lệnh nhanh (không mở shell) | ⬜ TODO | |
-| SSH-07 | SFTP: duyệt + upload/download file | ⬜ TODO | tùy chọn |
-| SSH-08 | Xác thực host key (known_hosts) | ⬜ TODO | |
-| SSH-09 | Xử lý sleep/wake: phát hiện chết + reconnect | ⬜ TODO | |
+| SSH-01 | Model `SSHProfile` + lưu/đọc Keychain | 🟦 IN_PROGRESS | `SSHProfile.swift + SSHProfileStore` |
+| SSH-02 | Tích hợp Citadel: connect bằng password | 🟦 IN_PROGRESS | `SSHSession.connect()` |
+| SSH-03 | Connect bằng private key (+ passphrase) | 🟦 IN_PROGRESS | `SSHSession` `.privateKey` auth |
+| SSH-04 | Tích hợp SwiftTerm: terminal tương tác | 🟦 IN_PROGRESS | `TerminalSessionView + TerminalCoordinator` |
+| SSH-05 | Quản lý nhiều session/tab | 🟦 IN_PROGRESS | `SSHState.sessions` dict + tab bar UI |
+| SSH-06 | Exec lệnh nhanh (không mở shell) | 🟦 IN_PROGRESS | `SSHSession.exec()` + `SSHView.execPanel` |
+| SSH-07 | SFTP: duyệt + upload/download file | 🟦 IN_PROGRESS | `SSHSession.listDirectory/downloadFile/uploadFile` |
+| SSH-08 | Xác thực host key (known_hosts) | 🟦 IN_PROGRESS | `SSHSession.makeHostKeyValidator()` |
+| SSH-09 | Xử lý sleep/wake: phát hiện chết + reconnect | 🟦 IN_PROGRESS | `SSHState.reconnectAll()` on wake |

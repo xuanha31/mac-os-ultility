@@ -14,12 +14,31 @@ final class GitViewModel: ObservableObject {
 
     @Published var githubToken = ""
     @Published var gitlabToken = ""
+    @Published var autoScanEnabled = false
+    @Published var autoScanIntervalMinutes: Int = 5
 
     private let credentials = GitCredentials()
+    private var autoScanTask: Task<Void, Never>?
 
     init() {
         githubToken = credentials.token(for: .github) ?? ""
         gitlabToken = credentials.token(for: .gitlab) ?? ""
+    }
+
+    deinit { autoScanTask?.cancel() }
+
+    func toggleAutoScan(_ on: Bool) {
+        autoScanEnabled = on
+        autoScanTask?.cancel()
+        guard on else { return }
+        autoScanTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: UInt64(autoScanIntervalMinutes) * 60_000_000_000)
+                guard !Task.isCancelled else { break }
+                if let repo = self.selectedRepo { self.loadMergeRequests(for: repo) }
+            }
+        }
     }
 
     var selectedRepo: GitRepoInfo? {
@@ -99,7 +118,7 @@ final class GitViewModel: ObservableObject {
 }
 
 struct GitView: View {
-    @StateObject private var viewModel = GitViewModel()
+    @ObservedObject var viewModel: GitViewModel
     @State private var showFolderPicker = false
     @State private var showTokens = false
     @State private var mergeTarget: MergeRequest?
@@ -129,14 +148,27 @@ struct GitView: View {
     }
 
     private var header: some View {
-        HStack {
-            Text("Git Manager").font(.largeTitle.bold())
-            Spacer()
-            if viewModel.isBusy { ProgressView().controlSize(.small) }
-            Button("Chọn thư mục…") { showFolderPicker = true }
-            Button("Quét") { viewModel.scan(doFetch: false) }.disabled(viewModel.rootPath == nil)
-            Button("Quét + Fetch") { viewModel.scan(doFetch: true) }.disabled(viewModel.rootPath == nil)
-            Button("Token…") { showTokens = true }
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Git Manager").font(.largeTitle.bold())
+                Spacer()
+                if viewModel.isBusy { ProgressView().controlSize(.small) }
+                Button("Chọn thư mục…") { showFolderPicker = true }
+                Button("Quét") { viewModel.scan(doFetch: false) }.disabled(viewModel.rootPath == nil)
+                Button("Quét + Fetch") { viewModel.scan(doFetch: true) }.disabled(viewModel.rootPath == nil)
+                Button("Token…") { showTokens = true }
+            }
+            HStack(spacing: 12) {
+                Toggle("Tự quét mỗi", isOn: Binding(
+                    get: { viewModel.autoScanEnabled },
+                    set: { viewModel.toggleAutoScan($0) }
+                ))
+                Stepper("\(viewModel.autoScanIntervalMinutes) phút",
+                        value: $viewModel.autoScanIntervalMinutes, in: 1...60)
+                    .fixedSize()
+                    .disabled(!viewModel.autoScanEnabled)
+                Text("(dùng ETag, tự động làm mới MR/PR)").font(.caption).foregroundStyle(.secondary)
+            }
         }
     }
 

@@ -1,0 +1,4 @@
+module COracleOCI {
+    header "coracle_shim.h"
+    export *
+}

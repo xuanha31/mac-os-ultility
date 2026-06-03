@@ -1,4 +1,19 @@
 import Foundation
+import AppKit
+
+// Đảm bảo sheet window trở thành key window để TextField nhận keyboard input.
+// macOS SwiftUI issue: sheet trong NavigationSplitView không tự makeKey.
+func activateSheet(then action: @escaping () -> Void = {}) {
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+        NSApp.activate(ignoringOtherApps: true)
+        NSApp.windows
+            .filter { $0.isVisible && $0 != NSApp.mainWindow }
+            .sorted { $0.windowNumber > $1.windowNumber }
+            .first?
+            .makeKey()
+        action()
+    }
+}
 
 enum Format {
     private static let byteFormatter: ByteCountFormatter = {

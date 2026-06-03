@@ -10,6 +10,9 @@ public enum Log {
     public static let monitor = Logger(subsystem: subsystem, category: "monitor")
     public static let cleaner = Logger(subsystem: subsystem, category: "cleaner")
     public static let keyRemap = Logger(subsystem: subsystem, category: "keyRemap")
+    public static let database = Logger(subsystem: subsystem, category: "database")
+    public static let ssh = Logger(subsystem: subsystem, category: "ssh")
+    public static let fan = Logger(subsystem: subsystem, category: "fan")
 
     /// Tạo logger cho category tuỳ ý (module thêm về sau dùng cái này).
     public static func make(_ category: String) -> Logger {

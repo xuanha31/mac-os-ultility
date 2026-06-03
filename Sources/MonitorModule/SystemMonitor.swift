@@ -11,8 +11,18 @@ public final class SystemMonitor: ObservableObject {
 
     @Published public private(set) var metrics = SystemMetrics.zero
     @Published public private(set) var isRunning = false
-    /// Đọc tốc độ quạt qua SMC chưa hỗ trợ ở increment này (xem MON-04 / docs).
+    /// MON-04: có đọc được tốc độ quạt qua SMC không.
     @Published public private(set) var fanSpeedSupported = false
+
+    /// Lịch sử mẫu để vẽ biểu đồ CPU/RAM (giữ tối đa `historyLimit` điểm).
+    @Published public private(set) var history: [MetricSample] = []
+    public struct MetricSample: Identifiable, Sendable {
+        public let id: Int
+        public let cpu: Double           // 0...1
+        public let memFraction: Double   // 0...1
+    }
+    private var sampleCounter = 0
+    private let historyLimit = 60
 
     private var timer: DispatchSourceTimer?
     private let queue = DispatchQueue(label: "com.macutil.monitor")
@@ -109,16 +119,38 @@ public final class SystemMonitor: ObservableObject {
         prevNet = currentNet
         prevSampleTime = now
 
+        let cpuTemp = SMCReader.cpuTemperature()
+
+        // MON-04: đọc tốc độ quạt qua SMC.
+        var fans: [Double] = []
+        let fanCount = SMCReader.fanCount()
+        if fanCount > 0 {
+            for i in 0..<fanCount {
+                if let rpm = SMCReader.fanSpeed(index: i), rpm > 0 { fans.append(rpm) }
+            }
+        }
+
         let result = SystemMetrics(
             cpuUsage: min(max(cpuUsage, 0), 1),
             memoryUsed: mem?.used ?? 0,
             memoryTotal: mem?.total ?? 0,
             netRxBytesPerSec: rxRate,
-            netTxBytesPerSec: txRate
+            netTxBytesPerSec: txRate,
+            cpuTemperatureCelsius: cpuTemp,
+            fanRPMs: fans
         )
 
         DispatchQueue.main.async { [weak self] in
-            self?.metrics = result
+            guard let self else { return }
+            self.metrics = result
+            self.fanSpeedSupported = !fans.isEmpty
+            self.sampleCounter += 1
+            self.history.append(MetricSample(id: self.sampleCounter,
+                                             cpu: result.cpuUsage,
+                                             memFraction: result.memoryUsedFraction))
+            if self.history.count > self.historyLimit {
+                self.history.removeFirst(self.history.count - self.historyLimit)
+            }
         }
     }
 }

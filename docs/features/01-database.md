@@ -30,14 +30,14 @@ Kết nối MySQL, Oracle, Redis; thực hiện SELECT, xem cấu trúc bảng, 
 
 | ID | Task | Trạng thái | Ghi chú |
 |----|------|-----------|---------|
-| DB-01 | Định nghĩa protocol `DatabaseDriver` chung | ⬜ TODO | |
-| DB-02 | Tích hợp MySQLNIO: connect + SELECT | ⬜ TODO | |
-| DB-03 | MySQL: fetch schema (INFORMATION_SCHEMA), SHOW CREATE | ⬜ TODO | |
-| DB-04 | MySQL: chạy procedure (`CALL`) | ⬜ TODO | |
-| DB-05 | Tích hợp RediStack: connect + lệnh cơ bản + xem keyspace | ⬜ TODO | |
-| DB-06 | Đánh giá & chọn driver Oracle (OracleNIO vs OCI vs ODBC) | 🔬 NEEDS_VERIFY | |
-| DB-07 | Oracle: connect + SELECT | ⬜ TODO | phụ thuộc DB-06 |
-| DB-08 | Oracle: xem ALL_SOURCE (package/procedure) + chạy proc | ⬜ TODO | phụ thuộc DB-06 |
-| DB-09 | SQL editor UI (syntax highlight) + bảng kết quả phân trang | ⬜ TODO | |
-| DB-10 | Lưu connection profile vào Keychain | ⬜ TODO | |
-| DB-11 | Xử lý sleep/wake: pool health-check + reconnect | ⬜ TODO | |
+| DB-01 | Định nghĩa protocol `DatabaseDriver` chung | 🟦 IN_PROGRESS | `DatabaseDriver.swift` |
+| DB-02 | Tích hợp MySQLNIO: connect + SELECT | 🟦 IN_PROGRESS | `MySQLDriver.swift` |
+| DB-03 | MySQL: fetch schema (INFORMATION_SCHEMA), SHOW CREATE | 🟦 IN_PROGRESS | `MySQLDriver.fetchSchema()` |
+| DB-04 | MySQL: chạy procedure (`CALL`) | 🟦 IN_PROGRESS | `MySQLDriver.execute()` |
+| DB-05 | Tích hợp RediStack: connect + lệnh cơ bản + xem keyspace | 🟦 IN_PROGRESS | `RedisDriver.swift` |
+| DB-06 | Đánh giá & chọn driver Oracle (OracleNIO vs OCI vs ODBC) | 🟦 IN_PROGRESS | OCI (Instant Client 19.8) cho Oracle cũ <12.1; fallback OracleNIO beta.3 cho 12.1+. Xem ORACLE-OCI-SETUP.md |
+| DB-07 | Oracle: connect + SELECT | 🟦 IN_PROGRESS | `OracleDriver.swift` |
+| DB-08 | Oracle: xem ALL_SOURCE (package/procedure) + chạy proc | 🟦 IN_PROGRESS | `OracleDriver.fetchSchema()` |
+| DB-09 | SQL editor UI (syntax highlight) + bảng kết quả phân trang | 🟦 IN_PROGRESS | `DatabaseView.swift` |
+| DB-10 | Lưu connection profile vào Keychain | 🟦 IN_PROGRESS | `ConnectionProfile.swift + ProfileStore` |
+| DB-11 | Xử lý sleep/wake: pool health-check + reconnect | 🟦 IN_PROGRESS | `DatabaseState.handleWake()` |

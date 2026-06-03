@@ -3,9 +3,12 @@ import Foundation
 /// Provider GitLab — Merge Request. Token PAT scope `api`.
 public struct GitLabProvider: GitHostProvider {
     private let token: String
-    private let http = HTTPClient()
+    private let http: HTTPClient
 
-    public init(token: String) { self.token = token }
+    public init(token: String, etagCache: ETagCache? = ETagCache()) {
+        self.token = token
+        self.http = HTTPClient(etagCache: etagCache)
+    }
 
     private func headers() -> [String: String] {
         ["PRIVATE-TOKEN": token]

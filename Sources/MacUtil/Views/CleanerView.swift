@@ -1,5 +1,25 @@
 import SwiftUI
+import AppKit
 import CleanerModule
+
+@MainActor
+final class DiskScanViewModel: ObservableObject {
+    @Published var root: DiskNode?
+    @Published var scannedPath = ""
+
+    func chooseAndScan() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Quét"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        scannedPath = url.path
+        let r = DiskScanner.makeRoot(url)
+        root = r
+        r.loadChildrenIfNeeded()   // nạp cấp 1 ngay
+    }
+}
 
 @MainActor
 final class CleanerViewModel: ObservableObject {
@@ -60,15 +80,159 @@ final class CleanerViewModel: ObservableObject {
     }
 }
 
+enum CleanerMode: String, CaseIterable, Identifiable {
+    case temp = "Dọn file tạm"
+    case disk = "Phân tích dung lượng đĩa"
+    var id: String { rawValue }
+}
+
 struct CleanerView: View {
-    @StateObject private var viewModel = CleanerViewModel()
+    @ObservedObject var cleaner: CleanerViewModel
+    @ObservedObject var diskScan: DiskScanViewModel
+    @State private var mode: CleanerMode = .temp
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Dọn dẹp").font(.largeTitle.bold())
+            Picker("", selection: $mode) {
+                ForEach(CleanerMode.allCases) { Text($0.rawValue).tag($0) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(maxWidth: 420)
+
+            switch mode {
+            case .temp: TempCleanerView(viewModel: cleaner)
+            case .disk: DiskScanView(vm: diskScan)
+            }
+        }
+        .padding(24)
+    }
+}
+
+// MARK: - #3: Phân tích dung lượng đĩa (cây folder/file)
+
+struct DiskScanView: View {
+    @ObservedObject var vm: DiskScanViewModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Button { vm.chooseAndScan() } label: { Label("Chọn thư mục & quét", systemImage: "folder.badge.magnifyingglass") }
+                if !vm.scannedPath.isEmpty {
+                    Text(vm.scannedPath).font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.middle)
+                }
+                Spacer()
+                if let r = vm.root {
+                    Text("Tổng: \(Format.bytes(UInt64(max(0, r.size))))").font(.callout).foregroundStyle(.secondary)
+                }
+            }
+
+            if let root = vm.root {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(root.children ?? []) { child in
+                            DiskNodeRow(node: child, rootSize: root.size, depth: 0)
+                        }
+                        if root.isLoading && (root.children?.isEmpty ?? true) {
+                            HStack { ProgressView().controlSize(.small); Text("Đang quét…").foregroundStyle(.secondary) }
+                                .padding(8)
+                        }
+                    }
+                }
+            } else {
+                ContentUnavailableLabel()
+            }
+        }
+    }
+}
+
+/// Một dòng trong cây — tự nạp con khi mở (lazy), không nghẽn.
+private struct DiskNodeRow: View {
+    @ObservedObject var node: DiskNode
+    let rootSize: Int64
+    let depth: Int
+    @State private var expanded = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: chevron)
+                    .font(.caption2).foregroundStyle(.secondary).frame(width: 12)
+                    .opacity(node.isDirectory ? 1 : 0)
+                Image(systemName: node.isDirectory ? "folder.fill" : "doc")
+                    .foregroundStyle(node.isDirectory ? .blue : .secondary).frame(width: 16)
+                Text(node.name).lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: 12)
+                bar
+                Text(Format.bytes(UInt64(max(0, node.size))))
+                    .font(.callout.monospacedDigit()).frame(width: 80, alignment: .trailing)
+                if node.isLoading { ProgressView().controlSize(.mini) }
+            }
+            .padding(.vertical, 3)
+            .padding(.leading, CGFloat(depth) * 16 + 4)
+            .contentShape(Rectangle())
+            .onTapGesture { toggle() }
+            .contextMenu {
+                Button("Hiện trong Finder") { NSWorkspace.shared.activateFileViewerSelecting([node.url]) }
+                Button("Copy đường dẫn") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(node.url.path, forType: .string)
+                }
+            }
+
+            if expanded {
+                ForEach(node.children ?? []) { child in
+                    DiskNodeRow(node: child, rootSize: rootSize, depth: depth + 1)
+                }
+            }
+        }
+    }
+
+    private var chevron: String { expanded ? "chevron.down" : "chevron.right" }
+
+    private func toggle() {
+        guard node.isDirectory else { return }
+        expanded.toggle()
+        if expanded { node.loadChildrenIfNeeded() }
+    }
+
+    private var fraction: Double { rootSize > 0 ? Double(node.size) / Double(rootSize) : 0 }
+
+    private var bar: some View {
+        GeometryReader { geo in
+            ZStack(alignment: .leading) {
+                RoundedRectangle(cornerRadius: 3).fill(.quaternary)
+                RoundedRectangle(cornerRadius: 3).fill(barColor)
+                    .frame(width: max(2, geo.size.width * fraction))
+            }
+        }
+        .frame(width: 90, height: 6)
+    }
+
+    private var barColor: Color { fraction > 0.5 ? .red : fraction > 0.2 ? .orange : .green }
+}
+
+private struct ContentUnavailableLabel: View {
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: "internaldrive").font(.system(size: 40)).foregroundStyle(.secondary)
+            Text("Chọn một thư mục để phân tích dung lượng (folder/file lớn xếp lên đầu).")
+                .foregroundStyle(.secondary).multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+// MARK: - Dọn file tạm (giữ nguyên)
+
+struct TempCleanerView: View {
+    @ObservedObject var viewModel: CleanerViewModel
     @State private var dryRun = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Dọn dẹp file tạm")
-                .font(.largeTitle.bold())
-
             Text("Chọn mục muốn dọn rồi bấm Quét để tính dung lượng. ⚠️ Nên đóng các app liên quan trước khi dọn.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -128,6 +292,5 @@ struct CleanerView: View {
                 Text(viewModel.statusMessage).foregroundStyle(.secondary)
             }
         }
-        .padding(24)
     }
 }

@@ -13,13 +13,26 @@
 ```bash
 cd mac-os-ultility
 swift build          # biên dịch
-swift run MacUtil     # chạy app (cửa sổ SwiftUI)
-swift test            # chạy unit test
+swift test           # chạy unit test
 ```
 
-> App hiện là **executable SwiftPM** để dev nhanh. Một số API (NSWorkspace sleep/wake, hidutil)
-> chạy tốt khi `swift run`. Việc **ký + notarize + privileged helper (fan control)** sẽ cần
-> bọc trong **Xcode app target** ở giai đoạn sau (M3/M5) — xem ARCHITECTURE §5.
+### ⚠️ Chạy app: DÙNG `./run-app.sh`, KHÔNG dùng `swift run`
+
+```bash
+./run-app.sh          # đóng gói .app bundle + open (debug)
+./run-app.sh release  # bản release
+```
+
+> **Quan trọng:** `swift run MacUtil` tạo một **executable trần**, không phải `.app` bundle.
+> macOS **không cho process trần trở thành active app** → các ô input trong cửa sổ/dialog
+> **không nhận keyboard** (gõ vào nhưng chữ rơi sang app đang active như VS Code/terminal).
+>
+> `run-app.sh` đóng gói binary thành `MacUtil.app` (có `Info.plist`) rồi `open` — macOS đăng ký
+> như GUI app chuẩn, keyboard focus hoạt động bình thường. Code cũng đã set
+> `NSApp.setActivationPolicy(.regular)` trong `AppDelegate` để hỗ trợ thêm.
+>
+> Việc **ký + notarize + privileged helper (fan control)** sẽ cần bọc trong **Xcode app target**
+> ở giai đoạn sau (M3/M5) — xem ARCHITECTURE §5.
 
 ## Mở bằng Xcode
 `File > Open…` chọn thư mục dự án (Xcode tự nhận `Package.swift`), chọn scheme `MacUtil` → Run.

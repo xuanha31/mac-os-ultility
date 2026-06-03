@@ -26,8 +26,8 @@
 
 | ID | Task | Trạng thái | Ghi chú |
 |----|------|-----------|---------|
-| KEY-01 | Hàm áp dụng remap qua hidutil (Command ↔ Shift) | ⬜ TODO | |
-| KEY-02 | Nút khôi phục mặc định (clear mapping) | ⬜ TODO | |
-| KEY-03 | Tạo/xóa LaunchAgent để giữ sau reboot | ⬜ TODO | |
-| KEY-04 | UI chọn cặp phím remap (mở rộng ngoài Cmd/Shift) | ⬜ TODO | |
+| KEY-01 | Hàm áp dụng remap qua hidutil (Command ↔ Shift) | 🟦 IN_PROGRESS | `KeyRemapper.swapCommandShift()` |
+| KEY-02 | Nút khôi phục mặc định (clear mapping) | 🟦 IN_PROGRESS | `KeyRemapper.reset()` |
+| KEY-03 | Tạo/xóa LaunchAgent để giữ sau reboot | 🟦 IN_PROGRESS | `LoginPersistence` |
+| KEY-04 | UI chọn cặp phím remap (mở rộng ngoài Cmd/Shift) | 🟦 IN_PROGRESS | `KeyRemapView` custom section; 10 HIDKey |
 | KEY-05 | (Tùy chọn) Phương án CGEventTap cho remap nâng cao | ⬜ TODO | cần Accessibility |

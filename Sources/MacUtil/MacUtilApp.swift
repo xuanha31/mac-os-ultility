@@ -94,6 +94,8 @@ struct MacUtilApp: App {
             MenuBarView(
                 monitor: appState.monitor,
                 clipboard: appState.clipboard,
+                power: appState.power,
+                battery: appState.battery,
                 openMainWindow: {
                     NSApp.setActivationPolicy(.regular)
                     NSApp.activate(ignoringOtherApps: true)

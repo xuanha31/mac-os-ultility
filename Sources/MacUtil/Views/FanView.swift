@@ -21,8 +21,8 @@ struct FanView: View {
                         }
                     }
                 }
-                if !state.controlEnabled {
-                    Label("Điều khiển quạt cần privileged helper (FAN-02). Hiện chỉ đọc tốc độ.",
+                if !state.fans.isEmpty && !state.controlEnabled {
+                    Label("Thiết bị này không hỗ trợ điều chỉnh tốc độ quạt (Apple Silicon). Hiện chỉ đọc.",
                           systemImage: "exclamationmark.triangle")
                         .font(.callout)
                         .foregroundStyle(.orange)

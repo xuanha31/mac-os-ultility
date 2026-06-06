@@ -59,11 +59,19 @@ let package = Package(
         ),
         .target(name: "FanControlModule",  dependencies: ["Core"]),
         .target(name: "ClipboardModule",   dependencies: ["Core"]),
+        .target(name: "PrivilegedHelperProtocol"),
+        .target(name: "PrivilegedHelperClient", dependencies: ["PrivilegedHelperProtocol"]),
+        .target(name: "PowerModule",       dependencies: ["Core", "PrivilegedHelperClient"]),
+        .target(name: "BatteryModule",     dependencies: ["Core", "PrivilegedHelperClient"]),
+        // Helper cũ để debug ghi BCLM trực tiếp; app dùng MacUtilPrivilegedHelper.
+        .executableTarget(name: "BatteryHelper"),
+        .executableTarget(name: "MacUtilPrivilegedHelper", dependencies: ["PrivilegedHelperProtocol"]),
         .executableTarget(
             name: "MacUtil",
             dependencies: [
                 "Core", "MonitorModule", "CleanerModule", "KeyRemapModule",
                 "GitManagerModule", "DatabaseModule", "SSHModule", "FanControlModule", "ClipboardModule",
+                "PowerModule", "BatteryModule",
                 .product(name: "Citadel",   package: "Citadel"),
                 .product(name: "NIOCore",   package: "swift-nio"),
                 .product(name: "SwiftTerm", package: "SwiftTerm"),
@@ -80,6 +88,7 @@ let package = Package(
             dependencies: [
                 "Core", "MonitorModule", "CleanerModule", "KeyRemapModule",
                 "GitManagerModule", "DatabaseModule", "SSHModule", "FanControlModule",
+                "PowerModule", "BatteryModule",
             ]
         )
     ] + (hasOCI ? [

@@ -7,6 +7,8 @@ import DatabaseModule
 import SSHModule
 import FanControlModule
 import ClipboardModule
+import PowerModule
+import BatteryModule
 
 /// State chia sẻ toàn app: coordinator sleep/wake + các module.
 @MainActor
@@ -17,6 +19,8 @@ final class AppState: ObservableObject {
     let ssh: SSHState
     let fan = FanState()
     let clipboard = ClipboardState()
+    let power: PowerState
+    let battery = BatteryState()
     // ViewModel giữ bền để không mất dữ liệu khi chuyển tab (NavigationSplitView tạo lại view).
     let git = GitViewModel()
     let cleaner = CleanerViewModel()
@@ -26,6 +30,7 @@ final class AppState: ObservableObject {
     init() {
         database = DatabaseState(sleepWake: sleepWake)
         ssh = SSHState(sleepWake: sleepWake)
+        power = PowerState(sleepWake: sleepWake)
         monitor.bind(to: sleepWake)
         monitor.start(interval: 1.0)
         registerGlobalHotKeys()

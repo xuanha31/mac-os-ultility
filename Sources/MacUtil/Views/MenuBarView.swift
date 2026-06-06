@@ -2,6 +2,8 @@ import SwiftUI
 import Core
 import MonitorModule
 import ClipboardModule
+import PowerModule
+import BatteryModule
 
 // Nội dung dropdown của MenuBarExtra (icon trên thanh menu macOS).
 // Truy cập nhanh: chỉ số hệ thống + clipboard gần đây + chụp màn hình.
@@ -9,6 +11,8 @@ import ClipboardModule
 struct MenuBarView: View {
     @ObservedObject var monitor: SystemMonitor
     @ObservedObject var clipboard: ClipboardState
+    @ObservedObject var power: PowerState
+    @ObservedObject var battery: BatteryState
     let openMainWindow: () -> Void
 
     @State private var launchAtLogin = false
@@ -19,6 +23,8 @@ struct MenuBarView: View {
             statsSection
             Divider()
             actionsSection
+            Divider()
+            powerSection
             Divider()
             clipboardSection
             Divider()
@@ -91,6 +97,83 @@ struct MenuBarView: View {
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 12).padding(.vertical, 4)
+    }
+
+    // MARK: - Nguồn (chống tự ngủ + hibernate)
+
+    private var powerSection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Nguồn").font(.caption.bold()).foregroundStyle(.secondary)
+                .padding(.horizontal, 12)
+
+            Toggle(isOn: Binding(
+                get: { power.isPreventingSleep },
+                set: { power.setPreventSleep($0) }
+            )) {
+                Label("Không tự động ngủ", systemImage: "cup.and.saucer")
+            }
+            .toggleStyle(.switch)
+            .padding(.horizontal, 12)
+
+            actionButton("Hibernate (ngủ đông)", icon: "moon.zzz", shortcut: "") {
+                power.hibernateNow()
+            }
+
+            if !power.statusMessage.isEmpty {
+                Text(power.statusMessage)
+                    .font(.caption2).foregroundStyle(.tertiary)
+                    .lineLimit(2)
+                    .padding(.horizontal, 12)
+            }
+
+            batteryLimitControls
+        }
+        .padding(.vertical, 6)
+    }
+
+    @ViewBuilder
+    private var batteryLimitControls: some View {
+        Divider().padding(.vertical, 2)
+
+        Toggle(isOn: Binding(
+            get: { battery.isLimitEnabled },
+            set: { $0 ? battery.enableLimit() : battery.disableLimit() }
+        )) {
+            Label {
+                HStack(spacing: 6) {
+                    Text("Giới hạn sạc")
+                    if let s = battery.snapshot {
+                        Text("\(s.percent)%")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
+                }
+            } icon: {
+                Image(systemName: battery.isLimitEnabled ? "powerplug" : "battery.100.bolt")
+            }
+        }
+        .toggleStyle(.switch)
+        .disabled(!battery.controlAvailable || battery.isBusy)
+        .padding(.horizontal, 12)
+
+        if battery.controlAvailable {
+            Stepper(value: $battery.maxPercent, in: 20...100, step: 5) {
+                Text("Ngưỡng: \(battery.maxPercent)%").font(.caption)
+            }
+            .padding(.horizontal, 12)
+
+            if battery.needsApply {
+                Button("Áp dụng \(battery.maxPercent)%") { battery.applyCurrent() }
+                    .padding(.horizontal, 12)
+            }
+        }
+
+        if !battery.statusMessage.isEmpty {
+            Text(battery.statusMessage)
+                .font(.caption2).foregroundStyle(.tertiary)
+                .lineLimit(2)
+                .padding(.horizontal, 12)
+        }
     }
 
     // MARK: - Clipboard

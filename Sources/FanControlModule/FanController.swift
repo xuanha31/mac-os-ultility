@@ -1,21 +1,20 @@
 import Foundation
 import Core
+import IOKit
 
-// FAN-01: Protocol FanController (HAL) + fallback no-op.
-// FAN-04: Min/max limits model.
-// FAN-05: Auto-restore logic khi app thoát.
-// FAN-06: Phát hiện MacBook Air (không có quạt).
-//
-// Ghi SMC (FAN-03) cần privileged helper (FAN-02) — chưa implement.
-// FanController chỉ expose interface; SMCFanController sẽ implement ở increment sau.
+// FAN-01: FanController protocol (HAL)
+// FAN-03: SMC write qua IOKit (ghi F#Mn → đặt min RPM; SMC tự điều chỉnh ở trên ngưỡng đó)
+// FAN-04: Min/max limits
+// FAN-05: Auto-restore khi app thoát
 
-/// Thông tin trạng thái một quạt.
+// MARK: - Public types
+
 public struct FanInfo: Identifiable, Sendable {
-    public let id: Int          // index (0, 1, ...)
+    public let id: Int
     public let currentRPM: Double
     public let minRPM: Double
     public let maxRPM: Double
-    public let targetRPM: Double?  // nil nếu đang auto
+    public let targetRPM: Double?  // nil = auto mode
     public var isAuto: Bool { targetRPM == nil }
 
     public init(id: Int, currentRPM: Double, minRPM: Double, maxRPM: Double, targetRPM: Double? = nil) {
@@ -24,115 +23,208 @@ public struct FanInfo: Identifiable, Sendable {
     }
 }
 
-/// Giao diện chung cho fan controller.
 public protocol FanController: AnyObject, Sendable {
-    /// Trả về danh sách quạt hiện tại (đọc SMC).
     func fans() async throws -> [FanInfo]
-
-    /// Đặt tốc độ tối thiểu (RPM) cho quạt `index`. Cần privileged helper.
     func setMinSpeed(_ rpm: Double, fanIndex: Int) async throws
-
-    /// Khôi phục chế độ auto cho quạt `index`.
     func resetToAuto(fanIndex: Int) async throws
-
-    /// Khôi phục tất cả quạt về auto — gọi khi app thoát hoặc crash.
     func resetAllToAuto() async throws
-}
-
-/// Kiểm tra thiết bị có quạt không (dựa vào số quạt từ SMC).
-public func deviceHasFan() -> Bool {
-    // Đọc SMC FNum — nếu 0 hoặc không đọc được → không có quạt (MacBook Air M-series)
-    // Fallback: trả true để UI hiện với thông báo "kiểm chứng cần thiết"
-    return true
-}
-
-// MARK: - No-op fallback (dùng khi privileged helper chưa có)
-
-/// Fallback: đọc được RPM qua SMC nhưng không thể ghi (không có privileged helper).
-public actor ReadOnlyFanController: FanController {
-
-    public init() {}
-
-    public func fans() async throws -> [FanInfo] {
-        // Đọc tốc độ quạt từ SMC (read-only, không cần helper)
-        var result: [FanInfo] = []
-        var i = 0
-        while true {
-            guard let rpm = readFanRPM(index: i) else { break }
-            result.append(FanInfo(
-                id: i,
-                currentRPM: rpm,
-                minRPM: readFanMinRPM(index: i) ?? 0,
-                maxRPM: readFanMaxRPM(index: i) ?? 6000,
-                targetRPM: nil
-            ))
-            i += 1
-        }
-        return result
-    }
-
-    public func setMinSpeed(_ rpm: Double, fanIndex: Int) async throws {
-        throw FanError.needsPrivilegedHelper
-    }
-
-    public func resetToAuto(fanIndex: Int) async throws {
-        throw FanError.needsPrivilegedHelper
-    }
-
-    public func resetAllToAuto() async throws {
-        throw FanError.needsPrivilegedHelper
-    }
-
-    // MARK: - SMC read helpers
-
-    private func readFanRPM(index: Int) -> Double? {
-        let key = String(format: "F%dAc", index)  // actual RPM
-        return smcReadFPE2(key: key)
-    }
-
-    private func readFanMinRPM(index: Int) -> Double? {
-        smcReadFPE2(key: String(format: "F%dMn", index))
-    }
-
-    private func readFanMaxRPM(index: Int) -> Double? {
-        smcReadFPE2(key: String(format: "F%dMx", index))
-    }
-
-    /// FPE2 — unsigned fixed-point 14.2 → RPM (duplicate of SMCReader in MonitorModule,
-    /// kept here to avoid cross-module dependency on internal MonitorModule type).
-    private func smcReadFPE2(key: String) -> Double? {
-        // Redirect to IOKit SMC — same logic as MonitorModule.SMCReader
-        // For now returns nil until SMCReader is exposed as public API in a shared module.
-        // TODO: move SMCReader to Core module (or a shared SMC module) to avoid duplication.
-        return nil
-    }
 }
 
 public enum FanError: Error, CustomStringConvertible {
     case needsPrivilegedHelper
     case smcWriteFailed(String)
+    case smcUnavailable
 
     public var description: String {
         switch self {
-        case .needsPrivilegedHelper: return "Cần privileged helper để điều khiển quạt (xem FAN-02)."
-        case .smcWriteFailed(let msg): return "SMC write thất bại: \(msg)"
+        case .needsPrivilegedHelper: return "Cần quyền admin để điều khiển quạt."
+        case .smcWriteFailed(let m): return "SMC write thất bại: \(m)"
+        case .smcUnavailable:        return "SMC không khả dụng trên thiết bị này."
         }
+    }
+}
+
+// MARK: - SMCFanController
+
+/// Đọc/ghi SMC trực tiếp qua IOKit.
+/// Đọc (F#Ac, F#Mn, F#Mx, FNum) không cần quyền đặc biệt.
+/// Ghi F#Mn (min RPM) không cần root trên Intel Macs; trên Apple Silicon
+/// thường bị từ chối → canWrite() trả false → UI chỉ đọc.
+public actor SMCFanController: FanController {
+
+    private var originalMins: [Int: Double] = [:]
+    private var manualTargets: [Int: Double] = [:]
+
+    public init() {}
+
+    public func fans() async throws -> [FanInfo] {
+        let count = smcReadUInt8("FNum") ?? 0
+        guard count > 0 else { return [] }
+        var result: [FanInfo] = []
+        for i in 0..<Int(count) {
+            guard let rpm = smcReadFPE2(String(format: "F%dAc", i)) else { continue }
+            let minRPM = smcReadFPE2(String(format: "F%dMn", i)) ?? 0
+            let maxRPM = smcReadFPE2(String(format: "F%dMx", i)) ?? 6000
+            if originalMins[i] == nil { originalMins[i] = minRPM }
+            result.append(FanInfo(
+                id: i, currentRPM: rpm, minRPM: minRPM, maxRPM: maxRPM,
+                targetRPM: manualTargets[i]
+            ))
+        }
+        return result
+    }
+
+    public func setMinSpeed(_ rpm: Double, fanIndex: Int) async throws {
+        let key = String(format: "F%dMn", fanIndex)
+        guard smcWriteFPE2(key, rpm: rpm) else {
+            throw FanError.smcWriteFailed("Ghi \(key) thất bại — thiết bị không cho phép hoặc cần quyền root.")
+        }
+        manualTargets[fanIndex] = rpm
+    }
+
+    public func resetToAuto(fanIndex: Int) async throws {
+        let original = originalMins[fanIndex] ?? 1200
+        let key = String(format: "F%dMn", fanIndex)
+        guard smcWriteFPE2(key, rpm: original) else {
+            throw FanError.smcWriteFailed("Reset \(key) thất bại.")
+        }
+        manualTargets.removeValue(forKey: fanIndex)
+    }
+
+    public func resetAllToAuto() async throws {
+        for idx in manualTargets.keys {
+            try? await resetToAuto(fanIndex: idx)
+        }
+    }
+
+    /// Kiểm tra xem thiết bị có cho phép ghi SMC không.
+    /// Thử ghi F0Mn với giá trị hiện tại (no-op nếu giá trị không đổi).
+    /// Gọi một lần sau khi fans() thành công.
+    public nonisolated func canWrite() -> Bool {
+        guard let rpm = smcReadFPE2("F0Mn") else { return false }
+        return smcWriteFPE2("F0Mn", rpm: rpm)
+    }
+
+    // MARK: - SMC read/write (nonisolated — pure IOKit, không truy cập actor state)
+
+    private nonisolated func smcReadFPE2(_ key: String) -> Double? {
+        guard let b = smcReadKey(key), b.count >= 2 else { return nil }
+        return Double(UInt16(b[0]) << 8 | UInt16(b[1])) / 4.0
+    }
+
+    private nonisolated func smcReadUInt8(_ key: String) -> UInt8? {
+        guard let b = smcReadKey(key), !b.isEmpty else { return nil }
+        return b[0]
+    }
+
+    @discardableResult
+    private nonisolated func smcWriteFPE2(_ key: String, rpm: Double) -> Bool {
+        let encoded = UInt16(max(0, rpm) * 4)
+        return smcWriteKey(key, bytes: [UInt8(encoded >> 8), UInt8(encoded & 0xFF)])
+    }
+
+    private nonisolated func smcReadKey(_ key: String) -> [UInt8]? {
+        guard let keyCode = fourCC(key) else { return nil }
+        return withSMCConnection { conn -> [UInt8]? in
+            var s = SMCParamStruct(); s.key = keyCode; s.data8 = 9
+            guard let info = smcCall(conn, s), info.result == 0 else { return nil }
+            let size = Int(info.keyInfo.dataSize)
+            guard size > 0 else { return nil }
+            var s2 = SMCParamStruct(); s2.key = keyCode
+            s2.keyInfo.dataSize = UInt32(size); s2.data8 = 5
+            guard let out = smcCall(conn, s2), out.result == 0 else { return nil }
+            return Array(withUnsafeBytes(of: out.bytes) { Array($0).prefix(size) })
+        }
+    }
+
+    private nonisolated func smcWriteKey(_ key: String, bytes: [UInt8]) -> Bool {
+        guard let keyCode = fourCC(key) else { return false }
+        return withSMCConnection { conn -> Bool? in
+            var s = SMCParamStruct(); s.key = keyCode; s.data8 = 9
+            guard let info = smcCall(conn, s), info.result == 0 else { return false }
+            let size = Int(info.keyInfo.dataSize)
+            var w = SMCParamStruct(); w.key = keyCode
+            w.keyInfo.dataSize = info.keyInfo.dataSize
+            w.keyInfo.dataType = info.keyInfo.dataType
+            w.data8 = 6
+            withUnsafeMutableBytes(of: &w.bytes) { ptr in
+                for (i, b) in bytes.prefix(size).enumerated() { ptr[i] = b }
+            }
+            guard let out = smcCall(conn, w) else { return false }
+            return out.result == 0
+        } ?? false
+    }
+
+    private nonisolated func withSMCConnection<T>(_ body: (io_connect_t) -> T?) -> T? {
+        let svc = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("AppleSMC"))
+        guard svc != IO_OBJECT_NULL else { return nil }
+        defer { IOObjectRelease(svc) }
+        var conn: io_connect_t = 0
+        guard IOServiceOpen(svc, mach_task_self_, 0, &conn) == KERN_SUCCESS else { return nil }
+        defer { IOServiceClose(conn) }
+        return body(conn)
+    }
+
+    private nonisolated func smcCall(_ conn: io_connect_t, _ input: SMCParamStruct) -> SMCParamStruct? {
+        var inp = input; var out = SMCParamStruct()
+        var outSize = MemoryLayout<SMCParamStruct>.stride
+        let rc = withUnsafePointer(to: &inp) { inPtr in
+            withUnsafeMutablePointer(to: &out) { outPtr in
+                IOConnectCallStructMethod(conn, 2, inPtr, MemoryLayout<SMCParamStruct>.stride, outPtr, &outSize)
+            }
+        }
+        return rc == KERN_SUCCESS ? out : nil
+    }
+
+    private nonisolated func fourCC(_ s: String) -> UInt32? {
+        let b = Array(s.utf8)
+        guard b.count == 4 else { return nil }
+        return UInt32(b[0]) << 24 | UInt32(b[1]) << 16 | UInt32(b[2]) << 8 | UInt32(b[3])
     }
 }
 
 // MARK: - FAN-05: Auto-restore on exit
 
-/// Đăng ký cleanup khi app thoát để reset quạt về auto.
 public final class FanAutoRestore: @unchecked Sendable {
     private let controller: any FanController
 
     public init(controller: any FanController) {
         self.controller = controller
-        // Bắt SIGTERM + atexit để reset về auto
         atexit_b { [c = controller] in
             let sema = DispatchSemaphore(value: 0)
             Task { try? await c.resetAllToAuto(); sema.signal() }
             sema.wait()
         }
     }
+}
+
+// MARK: - SMC C struct (layout phải khớp chính xác AppleSMC kernel struct — theo SMCKit by beltex)
+
+private struct SMCVersion {
+    var major: UInt8 = 0; var minor: UInt8 = 0; var build: UInt8 = 0
+    var reserved: UInt8 = 0; var release: UInt16 = 0
+}
+private struct SMCPLimitData {
+    var version: UInt16 = 0; var length: UInt16 = 0
+    var cpuPLimit: UInt32 = 0; var gpuPLimit: UInt32 = 0; var memPLimit: UInt32 = 0
+}
+private struct SMCKeyInfoData {
+    var dataSize: UInt32 = 0; var dataType: UInt32 = 0; var dataAttributes: UInt8 = 0
+}
+private struct SMCParamStruct {
+    var key: UInt32 = 0
+    var vers = SMCVersion()
+    var pLimitData = SMCPLimitData()
+    var keyInfo = SMCKeyInfoData()
+    var padding: UInt16 = 0
+    var result: UInt8 = 0
+    var status: UInt8 = 0
+    var data8: UInt8 = 0
+    var data32: UInt32 = 0
+    var bytes: (UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+                UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+                UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
+                UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8) = (
+                0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0,
+                0,0,0,0,0,0,0,0, 0,0,0,0,0,0,0,0)
 }

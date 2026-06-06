@@ -21,6 +21,23 @@ mkdir -p "${APP_DIR}/Contents/Resources"
 
 cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 
+# Helper cũ ghi BCLM bằng osascript, giữ lại để tiện debug thủ công.
+HELPER_PATH=".build/${CONFIG}/BatteryHelper"
+if [ -f "${HELPER_PATH}" ]; then
+    cp "${HELPER_PATH}" "${APP_DIR}/Contents/MacOS/BatteryHelper"
+fi
+
+# Privileged helper daemon: SMAppService yêu cầu plist nằm trong
+# Contents/Library/LaunchDaemons và executable nằm trong app bundle.
+PRIV_HELPER_PATH=".build/${CONFIG}/MacUtilPrivilegedHelper"
+if [ -f "${PRIV_HELPER_PATH}" ]; then
+    mkdir -p "${APP_DIR}/Contents/Library/LaunchServices"
+    mkdir -p "${APP_DIR}/Contents/Library/LaunchDaemons"
+    cp "${PRIV_HELPER_PATH}" "${APP_DIR}/Contents/Library/LaunchServices/com.macutil.helper"
+    cp "Resources/LaunchDaemons/com.macutil.helper.plist" \
+        "${APP_DIR}/Contents/Library/LaunchDaemons/com.macutil.helper.plist"
+fi
+
 # App icon
 if [ -f "Resources/AppIcon.icns" ]; then
     cp "Resources/AppIcon.icns" "${APP_DIR}/Contents/Resources/AppIcon.icns"

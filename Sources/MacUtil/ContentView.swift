@@ -10,6 +10,7 @@ enum Feature: String, CaseIterable, Identifiable {
     case git       = "Git"
     case fan       = "Quạt"
     case clipboard = "Clipboard"
+    case power     = "Nguồn & Pin"
 
     var id: String { rawValue }
 
@@ -23,6 +24,7 @@ enum Feature: String, CaseIterable, Identifiable {
         case .git:       return "arrow.triangle.branch"
         case .fan:       return "fanblades"
         case .clipboard: return "clipboard"
+        case .power:     return "bolt.batteryblock"
         }
     }
 }
@@ -33,9 +35,21 @@ struct ContentView: View {
 
     var body: some View {
         NavigationSplitView {
-            List(Feature.allCases, selection: $selection) { feature in
-                Label(feature.rawValue, systemImage: feature.systemImage)
-                    .tag(feature)
+            List(selection: $selection) {
+                Label(Feature.monitor.rawValue, systemImage: Feature.monitor.systemImage)
+                    .tag(Feature.monitor)
+
+                Section("Công cụ") {
+                    ForEach([Feature.database, .ssh, .git]) { f in
+                        Label(f.rawValue, systemImage: f.systemImage).tag(f)
+                    }
+                }
+
+                Section("Tiện ích") {
+                    ForEach([Feature.cleaner, .keyRemap, .fan, .clipboard, .power]) { f in
+                        Label(f.rawValue, systemImage: f.systemImage).tag(f)
+                    }
+                }
             }
             .navigationTitle("MacUtil")
             .frame(minWidth: 220)
@@ -49,6 +63,7 @@ struct ContentView: View {
             case .git:       GitView(viewModel: appState.git)
             case .fan:       FanView(state: appState.fan)
             case .clipboard: ClipboardView(state: appState.clipboard)
+            case .power:     PowerView(power: appState.power, battery: appState.battery)
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: .openClipboard)) { _ in

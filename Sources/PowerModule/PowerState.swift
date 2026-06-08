@@ -1,6 +1,9 @@
 import Foundation
 import Combine
 import Core
+#if canImport(AppKit)
+import AppKit
+#endif
 
 /// State chia sẻ cho tính năng nguồn (menu bar).
 /// - Chống tự ngủ: bật/tắt `caffeinate -d -i -m -s`.
@@ -8,8 +11,11 @@ import Core
 ///   khi máy thức dậy thì chạy lại app + khôi phục hibernatemode (qua SleepWakeCoordinator).
 @MainActor
 public final class PowerState: ObservableObject {
+    private static let hibernateOnLockKey = "PowerState.hibernateOnLockEnabled"
+
     @Published public private(set) var isPreventingSleep = false
     @Published public private(set) var isHibernating = false
+    @Published public private(set) var isHibernateOnLockEnabled: Bool
     @Published public var statusMessage = ""
 
     private let controller = PowerController()
@@ -17,8 +23,11 @@ public final class PowerState: ObservableObject {
     private var suspendedPIDs: [pid_t] = []
     private var previousHibernateMode: Int?
     private var cancellables = Set<AnyCancellable>()
+    private var workspaceObservers: [NSObjectProtocol] = []
 
     public init(sleepWake: SleepWakeCoordinator) {
+        isHibernateOnLockEnabled = UserDefaults.standard.bool(forKey: Self.hibernateOnLockKey)
+
         // Khi máy thức dậy: chạy lại app đã tạm dừng + khôi phục hibernatemode.
         sleepWake.events
             .receive(on: DispatchQueue.main)
@@ -26,6 +35,23 @@ public final class PowerState: ObservableObject {
                 if case .didWake = event { self?.handleWake() }
             }
             .store(in: &cancellables)
+
+        #if canImport(AppKit)
+        workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.sessionDidResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.handleSessionInactive() }
+        })
+        #endif
+    }
+
+    deinit {
+        #if canImport(AppKit)
+        let center = NSWorkspace.shared.notificationCenter
+        workspaceObservers.forEach { center.removeObserver($0) }
+        #endif
     }
 
     // MARK: - Chống tự ngủ (toggle on/off)
@@ -50,9 +76,28 @@ public final class PowerState: ObservableObject {
         }
     }
 
+    // MARK: - Hibernate khi khoá màn hình
+
+    public func setHibernateOnLock(_ on: Bool) {
+        isHibernateOnLockEnabled = on
+        UserDefaults.standard.set(on, forKey: Self.hibernateOnLockKey)
+        statusMessage = on
+            ? "Đã bật hibernate khi khoá màn hình."
+            : "Đã tắt hibernate khi khoá màn hình."
+    }
+
+    private func handleSessionInactive() {
+        guard isHibernateOnLockEnabled, !isHibernating else { return }
+        hibernateNow(lockScreenFirst: false)
+    }
+
     // MARK: - Hibernate
 
     public func hibernateNow() {
+        hibernateNow(lockScreenFirst: true)
+    }
+
+    private func hibernateNow(lockScreenFirst: Bool) {
         guard !isHibernating else { return }
         isHibernating = true
 
@@ -73,7 +118,9 @@ public final class PowerState: ObservableObject {
         suspendedPIDs = controller.suspendAllApps()
 
         // 4. Khoá màn hình + đưa máy vào hibernate.
-        controller.lockScreen()
+        if lockScreenFirst {
+            controller.lockScreen()
+        }
         controller.sleepNow()
         statusMessage = "Đang đưa máy vào hibernate…"
     }

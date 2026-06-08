@@ -13,6 +13,7 @@ struct PowerView: View {
                 Text("Nguồn").font(.largeTitle.bold())
 
                 preventSleepCard
+                hibernateOnLockCard
                 hibernateCard
                 batteryLimitCard
 
@@ -41,6 +42,30 @@ struct PowerView: View {
                 .font(.callout).foregroundStyle(.secondary)
             if power.isPreventingSleep {
                 Label("Đang chống tự ngủ.", systemImage: "checkmark.circle.fill")
+                    .font(.callout).foregroundStyle(.green)
+            }
+        }
+    }
+
+    // MARK: - Hibernate khi khoá màn hình
+
+    private var hibernateOnLockCard: some View {
+        card {
+            HStack {
+                Label("Hibernate khi khoá màn hình", systemImage: "lock.zzz")
+                    .font(.headline)
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { power.isHibernateOnLockEnabled },
+                    set: { power.setHibernateOnLock($0) }
+                ))
+                .toggleStyle(.switch)
+                .labelsHidden()
+            }
+            Text("Khi macOS khoá phiên làm việc, app tự đổi sang hibernatemode 25 rồi đưa máy vào hibernate. Lần đầu cần cho phép privileged helper; các lần sau không cần nhập mật khẩu.")
+                .font(.callout).foregroundStyle(.secondary)
+            if power.isHibernateOnLockEnabled {
+                Label("Đang bật hibernate khi khoá màn hình.", systemImage: "checkmark.circle.fill")
                     .font(.callout).foregroundStyle(.green)
             }
         }

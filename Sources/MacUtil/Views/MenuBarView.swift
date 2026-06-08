@@ -115,6 +115,15 @@ struct MenuBarView: View {
             .toggleStyle(.switch)
             .padding(.horizontal, 12)
 
+            Toggle(isOn: Binding(
+                get: { power.isHibernateOnLockEnabled },
+                set: { power.setHibernateOnLock($0) }
+            )) {
+                Label("Khoá màn hình → hibernate", systemImage: "lock.zzz")
+            }
+            .toggleStyle(.switch)
+            .padding(.horizontal, 12)
+
             actionButton("Hibernate (ngủ đông)", icon: "moon.zzz", shortcut: "") {
                 power.hibernateNow()
             }

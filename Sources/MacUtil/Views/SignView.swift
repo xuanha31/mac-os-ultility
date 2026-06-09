@@ -73,6 +73,18 @@ struct SignView: View {
                     Text("App iOS trỏ Server URL → http://\(ip):\(state.serverPort)")
                         .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                 }
+                Divider()
+                Toggle(isOn: $state.autoRefreshEnabled) {
+                    VStack(alignment: .leading) {
+                        Text("Tự động gia hạn").font(.subheadline)
+                        Text("Tự re-sign khi còn ≤ \(state.refreshThresholdDays) ngày (kiểm tra mỗi giờ). Cần MacUtil mở + iPhone kết nối được.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                if state.autoRefreshEnabled {
+                    Button("Gia hạn ngay") { Task { await state.runAutoRefresh() } }
+                        .controlSize(.small).disabled(state.isBusy)
+                }
             }.frame(maxWidth: .infinity, alignment: .leading).padding(4)
         }
     }

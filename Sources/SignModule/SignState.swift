@@ -22,6 +22,14 @@ public final class SignState: ObservableObject {
     @Published public var serverPort = 8080
     private var server: SignServer?
 
+    // Tự động gia hạn trước khi cert hết hạn (7 ngày)
+    @Published public var autoRefreshEnabled: Bool = UserDefaults.standard.bool(forKey: "signAutoRefresh") {
+        didSet { UserDefaults.standard.set(autoRefreshEnabled, forKey: "signAutoRefresh") }
+    }
+    public let refreshThresholdDays = 2
+    @Published public var lastAutoRefresh: Date?
+    private var autoRefreshTask: Task<Void, Never>?
+
     private var store = SignStore()
 
     public init() {
@@ -29,6 +37,33 @@ public final class SignState: ObservableObject {
         teams = store.teams; devices = store.devices
         apps = store.apps; records = store.records
         refreshEnvironment()
+        startAutoRefreshLoop()
+    }
+
+    // MARK: - Tự động gia hạn
+
+    private func startAutoRefreshLoop() {
+        autoRefreshTask?.cancel()
+        autoRefreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.runAutoRefresh()
+                try? await Task.sleep(for: .seconds(3600))   // kiểm tra mỗi giờ
+            }
+        }
+    }
+
+    /// Quét các bản ký sắp hết hạn (<= refreshThresholdDays) và re-sign lặng lẽ.
+    /// Không cần 2FA (account ở Xcode) nên chạy nền hoàn toàn tự động.
+    public func runAutoRefresh() async {
+        guard autoRefreshEnabled, !isBusy else { return }
+        let expiring = records.filter { $0.status == "ok" && $0.daysLeft <= refreshThresholdDays }
+        guard !expiring.isEmpty else { return }
+        for rec in expiring {
+            guard let app = apps.first(where: { $0.id == rec.appID }),
+                  let device = devices.first(where: { $0.udid == rec.deviceUDID }) else { continue }
+            _ = await performSign(app: app, device: device, quiet: true)
+        }
+        lastAutoRefresh = Date()
     }
 
     private func persist() {
@@ -89,37 +124,41 @@ public final class SignState: ObservableObject {
     // MARK: - Ký + cài
 
     public func signAndInstall(app: SignApp, device: SignDevice) {
+        Task { await performSign(app: app, device: device, quiet: false) }
+    }
+
+    /// Ký + cài, await được (để scheduler gọi tuần tự). quiet=true: dùng cho auto-refresh nền.
+    @discardableResult
+    func performSign(app: SignApp, device: SignDevice, quiet: Bool) async -> Bool {
         guard let team = teams.first(where: { $0.teamID == app.teamID }) else {
-            setStatus("App chưa gắn team hợp lệ."); return
+            if !quiet { setStatus("App '\(app.name)' chưa gắn team hợp lệ.") }
+            return false
         }
-        isBusy = true; log = ""
-        appendLog("=== Ký \(app.name) cho \(device.name) bằng team \(team.teamID) ===\n")
-        Task.detached { [weak self] in
-            guard let self else { return }
-            let logCb: (String) -> Void = { s in Task { @MainActor [weak self] in self?.appendLog(s) } }
-            do {
-                let ipa = try await self.resolveIPA(app, log: logCb)
-                let bundleID = try XcodeSigner.signAndInstall(
-                    ipa: ipa, team: team, appName: app.name, udid: device.udid, log: logCb)
-                let now = Date()
-                let rec = SignRecord(appID: app.id, deviceUDID: device.udid, signedBundleID: bundleID,
-                                     signedAt: now, expiresAt: now.addingTimeInterval(7*24*3600),
-                                     status: "ok", log: await self.log)
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.records.removeAll { $0.appID == app.id && $0.deviceUDID == device.udid }
-                    self.records.append(rec); self.persist()
-                    self.isBusy = false
-                    self.setStatus("✓ Đã cài \(app.name) lên \(device.name). Vào iPhone → Settings → General → VPN & Device Management để Trust.")
-                }
-            } catch {
-                await MainActor.run { [weak self] in
-                    guard let self else { return }
-                    self.appendLog("\n✗ LỖI: \(error)\n")
-                    self.isBusy = false
-                    self.setStatus("Ký thất bại: \(error)")
-                }
-            }
+        guard !isBusy else { return false }
+        isBusy = true
+        if !quiet { log = "" }
+        appendLog("=== \(quiet ? "[auto] " : "")Ký \(app.name) → \(device.name) (team \(team.teamID)) ===\n")
+        let logCb: (String) -> Void = { s in Task { @MainActor [weak self] in self?.appendLog(s) } }
+        do {
+            let ipa = try await resolveIPA(app, log: logCb)
+            let appName = app.name, udid = device.udid
+            let bundleID = try await Task.detached(priority: .userInitiated) {
+                try XcodeSigner.signAndInstall(ipa: ipa, team: team, appName: appName, udid: udid, log: logCb)
+            }.value
+            let now = Date()
+            let rec = SignRecord(appID: app.id, deviceUDID: device.udid, signedBundleID: bundleID,
+                                 signedAt: now, expiresAt: now.addingTimeInterval(7*24*3600),
+                                 status: "ok", log: log)
+            records.removeAll { $0.appID == app.id && $0.deviceUDID == device.udid }
+            records.append(rec); persist()
+            isBusy = false
+            setStatus("✓ Đã cài \(app.name) lên \(device.name)." + (quiet ? "" : " Trust trên iPhone để mở."))
+            return true
+        } catch {
+            appendLog("\n✗ LỖI: \(error)\n")
+            isBusy = false
+            if !quiet { setStatus("Ký thất bại: \(error)") }
+            return false
         }
     }
 

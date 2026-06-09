@@ -12,3 +12,6 @@ DerivedData/
 
 # macOS
 .DS_Store
+
+# Agent tooling
+AGENT_MEMORY.md

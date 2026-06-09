@@ -9,6 +9,7 @@ import FanControlModule
 import ClipboardModule
 import PowerModule
 import BatteryModule
+import SignModule
 
 /// State chia sẻ toàn app: coordinator sleep/wake + các module.
 @MainActor
@@ -26,6 +27,7 @@ final class AppState: ObservableObject {
     let cleaner = CleanerViewModel()
     let diskScan = DiskScanViewModel()
     let keyRemap = KeyRemapViewModel()
+    let sign = SignState()
 
     init() {
         database = DatabaseState(sleepWake: sleepWake)

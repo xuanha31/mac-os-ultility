@@ -8,6 +8,7 @@ enum Feature: String, CaseIterable, Identifiable {
     case database  = "Database"
     case ssh       = "SSH"
     case git       = "Git"
+    case sign      = "Sign (iOS)"
     case fan       = "Quạt"
     case clipboard = "Clipboard"
     case power     = "Nguồn & Pin"
@@ -22,6 +23,7 @@ enum Feature: String, CaseIterable, Identifiable {
         case .database:  return "cylinder.split.1x2"
         case .ssh:       return "terminal"
         case .git:       return "arrow.triangle.branch"
+        case .sign:      return "signature"
         case .fan:       return "fanblades"
         case .clipboard: return "clipboard"
         case .power:     return "bolt.batteryblock"
@@ -40,7 +42,7 @@ struct ContentView: View {
                     .tag(Feature.monitor)
 
                 Section("Công cụ") {
-                    ForEach([Feature.database, .ssh, .git]) { f in
+                    ForEach([Feature.database, .ssh, .git, .sign]) { f in
                         Label(f.rawValue, systemImage: f.systemImage).tag(f)
                     }
                 }
@@ -61,6 +63,7 @@ struct ContentView: View {
             case .database:  DatabaseView(state: appState.database)
             case .ssh:       SSHView(state: appState.ssh)
             case .git:       GitView(viewModel: appState.git)
+            case .sign:      SignView(state: appState.sign)
             case .fan:       FanView(state: appState.fan)
             case .clipboard: ClipboardView(state: appState.clipboard)
             case .power:     PowerView(power: appState.power, battery: appState.battery)

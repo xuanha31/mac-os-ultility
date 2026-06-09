@@ -35,6 +35,7 @@ let package = Package(
         .target(name: "CleanerModule",   dependencies: ["Core"]),
         .target(name: "KeyRemapModule",  dependencies: ["Core"]),
         .target(name: "GitManagerModule",dependencies: ["Core"]),
+        .target(name: "SignModule",      dependencies: ["Core"]),
         .target(
             name: "DatabaseModule",
             dependencies: [
@@ -71,7 +72,7 @@ let package = Package(
             dependencies: [
                 "Core", "MonitorModule", "CleanerModule", "KeyRemapModule",
                 "GitManagerModule", "DatabaseModule", "SSHModule", "FanControlModule", "ClipboardModule",
-                "PowerModule", "BatteryModule",
+                "PowerModule", "BatteryModule", "SignModule",
                 .product(name: "Citadel",   package: "Citadel"),
                 .product(name: "NIOCore",   package: "swift-nio"),
                 .product(name: "SwiftTerm", package: "SwiftTerm"),

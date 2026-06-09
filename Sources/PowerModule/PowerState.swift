@@ -37,8 +37,11 @@ public final class PowerState: ObservableObject {
             .store(in: &cancellables)
 
         #if canImport(AppKit)
-        workspaceObservers.append(NSWorkspace.shared.notificationCenter.addObserver(
-            forName: NSWorkspace.sessionDidResignActiveNotification,
+        // Bắt đúng sự kiện KHOÁ MÀN HÌNH (lock screen / screensaver có mật khẩu),
+        // không phải fast-user-switch như sessionDidResignActiveNotification.
+        let distributed = DistributedNotificationCenter.default()
+        workspaceObservers.append(distributed.addObserver(
+            forName: Notification.Name("com.apple.screenIsLocked"),
             object: nil,
             queue: .main
         ) { [weak self] _ in
@@ -49,7 +52,7 @@ public final class PowerState: ObservableObject {
 
     deinit {
         #if canImport(AppKit)
-        let center = NSWorkspace.shared.notificationCenter
+        let center = DistributedNotificationCenter.default()
         workspaceObservers.forEach { center.removeObserver($0) }
         #endif
     }
@@ -101,6 +104,11 @@ public final class PowerState: ObservableObject {
         guard !isHibernating else { return }
         isHibernating = true
 
+        // Caffeinate giữ sleep-assertion sẽ chặn máy ngủ lại sau dark wake → tắt trước.
+        if isPreventingSleep {
+            setPreventSleep(false)
+        }
+
         // 1. Lưu hibernatemode hiện tại để khôi phục sau khi thức dậy.
         previousHibernateMode = controller.currentHibernateMode()
 
@@ -126,6 +134,9 @@ public final class PowerState: ObservableObject {
     }
 
     private func handleWake() {
+        // Lưu ý: .didWake chỉ phát khi wake ĐẦY ĐỦ do người dùng (ấn nút/phím),
+        // KHÔNG phát cho dark/maintenance wake → ở đây luôn là người dùng muốn dùng
+        // máy lại. Resume app + khôi phục hibernatemode như bình thường.
         if !suspendedPIDs.isEmpty {
             controller.resumeApps(suspendedPIDs)
             suspendedPIDs = []

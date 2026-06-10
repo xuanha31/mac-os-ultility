@@ -155,6 +155,10 @@ struct MenuBarView: View {
                         Text("\(s.percent)%")
                             .font(.caption2.monospacedDigit())
                             .foregroundStyle(.secondary)
+                        let w = s.chargingWatts ?? 0
+                        Text(String(format: w > 0 ? "⚡︎%.1fW" : "%.0fW", w))
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(w > 0 ? .green : .secondary)
                     }
                 }
             } icon: {

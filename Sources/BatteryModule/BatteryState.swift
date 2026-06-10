@@ -72,7 +72,9 @@ public final class BatteryState: ObservableObject {
     // MARK: - Hiển thị (đọc, không cần quyền)
 
     private func startPolling() {
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        // 5s để tốc độ sạc (W) cập nhật kịp khi cắm/rút sạc. Đọc IOPS + AppleSmartBattery
+        // + SMC đều nhẹ nên poll nhanh không đáng kể.
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 5, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in self?.refreshDisplay() }
         }
     }

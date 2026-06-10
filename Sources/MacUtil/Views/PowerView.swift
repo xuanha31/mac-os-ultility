@@ -101,6 +101,10 @@ struct PowerView: View {
                     .font(.headline)
                 Spacer()
                 if let s = battery.snapshot {
+                    let w = s.chargingWatts ?? 0
+                    Label(String(format: "%.1f W", w), systemImage: w > 0 ? "bolt.fill" : "bolt.slash")
+                        .font(.callout.monospacedDigit())
+                        .foregroundStyle(w > 0 ? .green : .secondary)
                     Text("\(s.percent)%")
                         .font(.title3.monospacedDigit().bold())
                         .foregroundStyle(s.onACPower ? .green : .primary)
@@ -113,6 +117,20 @@ struct PowerView: View {
                 .toggleStyle(.switch)
                 .labelsHidden()
                 .disabled(!battery.controlAvailable || battery.isBusy)
+            }
+
+            if let s = battery.snapshot, s.onACPower {
+                HStack(spacing: 6) {
+                    if let w = s.chargingWatts {
+                        Text(String(format: "Đang nạp %.1f W vào pin", w))
+                    } else {
+                        Text("Đã cắm adapter — pin không nạp thêm")
+                    }
+                    if let a = s.adapterWatts {
+                        Text(String(format: "(adapter %.0f W)", a)).foregroundStyle(.tertiary)
+                    }
+                }
+                .font(.callout).foregroundStyle(.secondary)
             }
 
             Stepper(value: $battery.maxPercent, in: 20...100, step: 5) {

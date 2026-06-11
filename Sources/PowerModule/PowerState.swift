@@ -7,8 +7,9 @@ import AppKit
 
 /// State chia sẻ cho tính năng nguồn (menu bar).
 /// - Chống tự ngủ: bật/tắt `caffeinate -d -i -m -s`.
-/// - Hibernate: lưu hibernatemode cũ → đặt 25 → tạm dừng app → khoá màn hình → ngủ;
-///   khi máy thức dậy thì chạy lại app + khôi phục hibernatemode (qua SleepWakeCoordinator).
+/// - Hibernate khi khoá: CHỈ kích hoạt khi MÀN HÌNH ĐÃ TẮT *và* ĐANG KHOÁ.
+///   Lưu hibernatemode cũ → đặt 25 → tạm dừng app → ngủ; khi máy thức dậy thì
+///   chạy lại app + khôi phục hibernatemode (qua SleepWakeCoordinator).
 @MainActor
 public final class PowerState: ObservableObject {
     private static let hibernateOnLockKey = "PowerState.hibernateOnLockEnabled"
@@ -23,7 +24,13 @@ public final class PowerState: ObservableObject {
     private var suspendedPIDs: [pid_t] = []
     private var previousHibernateMode: Int?
     private var cancellables = Set<AnyCancellable>()
+    private var distributedObservers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
+
+    // Điều kiện hibernate = màn hình ĐÃ TẮT và ĐANG KHOÁ. Theo dõi độc lập 2 cờ
+    // vì thứ tự "khoá" và "tắt màn hình" không cố định (tuỳ cấu hình máy).
+    private var isScreenLocked = false
+    private var isDisplayAsleep = false
 
     public init(sleepWake: SleepWakeCoordinator) {
         isHibernateOnLockEnabled = UserDefaults.standard.bool(forKey: Self.hibernateOnLockKey)
@@ -37,23 +44,49 @@ public final class PowerState: ObservableObject {
             .store(in: &cancellables)
 
         #if canImport(AppKit)
-        // Bắt đúng sự kiện KHOÁ MÀN HÌNH (lock screen / screensaver có mật khẩu),
-        // không phải fast-user-switch như sessionDidResignActiveNotification.
+        // Trạng thái KHOÁ / MỞ KHOÁ màn hình (distributed notifications).
         let distributed = DistributedNotificationCenter.default()
-        workspaceObservers.append(distributed.addObserver(
+        distributedObservers.append(distributed.addObserver(
             forName: Notification.Name("com.apple.screenIsLocked"),
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.handleSessionInactive() }
+            Task { @MainActor in self?.setScreenLocked(true) }
+        })
+        distributedObservers.append(distributed.addObserver(
+            forName: Notification.Name("com.apple.screenIsUnlocked"),
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.setScreenLocked(false) }
+        })
+
+        // Trạng thái TẮT / SÁNG màn hình (workspace notifications).
+        // Khi user ấn phím để nhập mật khẩu → màn hình SÁNG → không hibernate nữa.
+        let workspace = NSWorkspace.shared.notificationCenter
+        workspaceObservers.append(workspace.addObserver(
+            forName: NSWorkspace.screensDidSleepNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.setDisplayAsleep(true) }
+        })
+        workspaceObservers.append(workspace.addObserver(
+            forName: NSWorkspace.screensDidWakeNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in self?.setDisplayAsleep(false) }
         })
         #endif
     }
 
     deinit {
         #if canImport(AppKit)
-        let center = DistributedNotificationCenter.default()
-        workspaceObservers.forEach { center.removeObserver($0) }
+        let distributed = DistributedNotificationCenter.default()
+        distributedObservers.forEach { distributed.removeObserver($0) }
+        let workspace = NSWorkspace.shared.notificationCenter
+        workspaceObservers.forEach { workspace.removeObserver($0) }
         #endif
     }
 
@@ -89,8 +122,25 @@ public final class PowerState: ObservableObject {
             : "Đã tắt hibernate khi khoá màn hình."
     }
 
-    private func handleSessionInactive() {
-        guard isHibernateOnLockEnabled, !isHibernating else { return }
+    private func setScreenLocked(_ locked: Bool) {
+        isScreenLocked = locked
+        if locked { evaluateHibernateOnLock() }
+    }
+
+    private func setDisplayAsleep(_ asleep: Bool) {
+        isDisplayAsleep = asleep
+        if asleep { evaluateHibernateOnLock() }
+    }
+
+    /// Chỉ hibernate khi màn hình ĐÃ TẮT và ĐANG KHOÁ.
+    /// Lúc user sáng màn hình để nhập mật khẩu (isDisplayAsleep == false) sẽ không
+    /// bao giờ vào nhánh hibernate → tránh vòng lặp wake↔sleep gây nhấp nháy.
+    private func evaluateHibernateOnLock() {
+        guard isHibernateOnLockEnabled,
+              isScreenLocked,
+              isDisplayAsleep,
+              !isHibernating
+        else { return }
         hibernateNow(lockScreenFirst: false)
     }
 
@@ -145,6 +195,9 @@ public final class PowerState: ObservableObject {
             controller.restoreHibernateMode(mode)
             previousHibernateMode = nil
         }
+        // Sau khi user thức máy, màn hình chắc chắn đang SÁNG → reset cờ để không
+        // hibernate lại cho tới khi màn hình tắt lần nữa (đề phòng thiếu screensDidWake).
+        isDisplayAsleep = false
         isHibernating = false
         statusMessage = ""
     }

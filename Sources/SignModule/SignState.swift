@@ -117,7 +117,15 @@ public final class SignState: ObservableObject {
     }
 
     public func addApp(_ app: SignApp) { apps.append(app); persist() }
-    public func deleteApp(_ app: SignApp) { apps.removeAll { $0.id == app.id }; persist() }
+    public func updateApp(_ app: SignApp) {
+        guard let idx = apps.firstIndex(where: { $0.id == app.id }) else { return }
+        apps[idx] = app; persist()
+    }
+    public func deleteApp(_ app: SignApp) {
+        apps.removeAll { $0.id == app.id }
+        records.removeAll { $0.appID == app.id }   // dọn bản ghi cài liên quan
+        persist()
+    }
     public func deleteTeam(_ t: SignTeam) { teams.removeAll { $0.teamID == t.teamID }; persist() }
     public func deleteDevice(_ d: SignDevice) { devices.removeAll { $0.udid == d.udid }; persist() }
 
@@ -157,30 +165,41 @@ public final class SignState: ObservableObject {
         } catch {
             appendLog("\n✗ LỖI: \(error)\n")
             isBusy = false
-            if !quiet { setStatus("Ký thất bại: \(error)") }
+            if !quiet { setStatus("✗ \(error)") }
             return false
         }
     }
 
-    /// Lấy file IPA: từ path local, hoặc tải release mới nhất của GitHub repo.
+    /// Lấy file IPA: path local, release mới nhất của GitHub repo, hoặc URL tải trực tiếp.
     private func resolveIPA(_ app: SignApp, log: @escaping (String) -> Void) async throws -> URL {
         if let path = app.sourcePath, FileManager.default.fileExists(atPath: path) {
             return URL(fileURLWithPath: path)
         }
-        guard let repo = app.githubRepo, !repo.isEmpty else {
-            throw SignError("App chưa có nguồn IPA (file local hoặc GitHub repo).")
+        if let repo = app.githubRepo, !repo.isEmpty {
+            log("→ Lấy IPA mới nhất từ GitHub \(repo)...\n")
+            let apiURL = URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!
+            let (data, _) = try await URLSession.shared.data(from: apiURL)
+            guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let assets = json["assets"] as? [[String: Any]],
+                  let asset = assets.first(where: { ($0["name"] as? String)?.hasSuffix(".ipa") == true }),
+                  let urlStr = asset["browser_download_url"] as? String,
+                  let url = URL(string: urlStr) else {
+                throw SignError("Không tìm thấy asset .ipa trong release mới nhất của \(repo).")
+            }
+            let (tmp, _) = try await URLSession.shared.download(from: url)
+            return try Self.moveDownloadToSupport(tmp)
         }
-        log("→ Lấy IPA mới nhất từ GitHub \(repo)...\n")
-        let apiURL = URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!
-        let (data, _) = try await URLSession.shared.data(from: apiURL)
-        guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let assets = json["assets"] as? [[String: Any]],
-              let asset = assets.first(where: { ($0["name"] as? String)?.hasSuffix(".ipa") == true }),
-              let urlStr = asset["browser_download_url"] as? String,
-              let url = URL(string: urlStr) else {
-            throw SignError("Không tìm thấy asset .ipa trong release mới nhất của \(repo).")
+        if let urlStr = app.ipaURL, !urlStr.isEmpty {
+            guard let url = URL(string: urlStr) else { throw SignError("URL IPA không hợp lệ: \(urlStr)") }
+            log("→ Tải IPA trực tiếp từ \(urlStr)...\n")
+            let (tmp, _) = try await URLSession.shared.download(from: url)
+            return try Self.moveDownloadToSupport(tmp)
         }
-        let (tmp, _) = try await URLSession.shared.download(from: url)
+        throw SignError("App chưa có nguồn IPA (file local, GitHub repo, hoặc URL).")
+    }
+
+    /// Di chuyển file IPA vừa tải về thư mục hỗ trợ với tên duy nhất.
+    private static func moveDownloadToSupport(_ tmp: URL) throws -> URL {
         let dest = XcodeSigner.supportDir.appendingPathComponent("dl-\(UUID().uuidString).ipa")
         try? FileManager.default.removeItem(at: dest)
         try FileManager.default.moveItem(at: tmp, to: dest)

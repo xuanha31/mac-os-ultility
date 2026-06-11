@@ -245,7 +245,40 @@ public enum XcodeSigner {
         log("→ Cài lên thiết bị (devicectl)...\n")
         let r = try run("/usr/bin/xcrun",
             ["devicectl", "device", "install", "app", "--device", udid, ipa.path], log: log)
-        guard r.code == 0 else { throw SignError("devicectl cài thất bại (xem log).") }
+        guard r.code == 0 else { throw installError(from: r.out) }
+    }
+
+    /// Diễn giải output devicectl thành thông báo dễ hiểu thay vì lỗi chung chung.
+    static func installError(from output: String) -> SignError {
+        // Tài khoản Apple ID miễn phí: tối đa 3 app ký bằng free profile cùng lúc.
+        if output.contains("maximum number of installed apps")
+            || output.contains("ApplicationVerificationFailed") {
+            var msg = "Vượt giới hạn 3 app của tài khoản Apple ID miễn phí. "
+                + "Xoá bớt 1 app đã ký trên iPhone rồi thử lại, hoặc dùng tài khoản Developer trả phí."
+            let apps = installedAppIDs(from: output)
+            if !apps.isEmpty {
+                msg += "\nĐang chiếm slot: " + apps.joined(separator: ", ")
+            }
+            return SignError(msg)
+        }
+        // Developer Mode chưa bật trên iPhone.
+        if output.contains("Developer Mode") {
+            return SignError("iPhone chưa bật Developer Mode (Settings → Privacy & Security → Developer Mode).")
+        }
+        return SignError("devicectl cài thất bại (xem log).")
+    }
+
+    /// Trích danh sách app-identifier (teamID.bundleID) mà devicectl báo đang chiếm slot.
+    static func installedAppIDs(from output: String) -> [String] {
+        guard let re = try? NSRegularExpression(pattern: "\"([0-9A-Z]{10}\\.[A-Za-z0-9._-]+)\"") else { return [] }
+        let range = NSRange(output.startIndex..., in: output)
+        var seen = Set<String>(), result: [String] = []
+        for m in re.matches(in: output, range: range) {
+            guard let r = Range(m.range(at: 1), in: output) else { continue }
+            let id = String(output[r])
+            if seen.insert(id).inserted { result.append(id) }
+        }
+        return result
     }
 
     // MARK: - Orchestration

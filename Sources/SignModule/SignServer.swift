@@ -5,7 +5,12 @@ import Network
 
 struct TeamDTO: Codable { let team_id: String; let apple_id: String }
 struct DeviceDTO: Codable { let udid: String; let name: String }
-struct AppDTO: Codable { let id: String; let name: String; let team_id: String; let source: String? }
+struct AppDTO: Codable {
+    let id: String; let name: String; let team_id: String
+    let source: String?            // mô tả gộp để hiển thị
+    let github_repo: String?       // field riêng để app iOS prefill khi sửa
+    let ipa_url: String?
+}
 struct RecordDTO: Codable {
     let id: String; let app_id: String; let device_udid: String
     let signed_bundle_id: String; let status: String; let days_left: Int
@@ -107,6 +112,16 @@ public final class SignServer {
                                                        githubRepo: b.github_repo, ipaURL: b.ipa_url) ?? false }
             return json(["ok": ok])
         }
+        if m == "PUT", p.count == 2, p[0] == "apps" {
+            guard let b = decode(req.body, AddAppBody.self) else { return bad() }
+            let ok = onMain { self.state?.serverUpdateApp(appID: p[1], name: b.name, teamID: b.team_id,
+                                                          githubRepo: b.github_repo, ipaURL: b.ipa_url) ?? false }
+            return ok ? json(["ok": true]) : notFound()
+        }
+        if m == "DELETE", p.count == 2, p[0] == "apps" {
+            let ok = onMain { self.state?.serverDeleteApp(appID: p[1]) ?? false }
+            return ok ? json(["ok": true]) : notFound()
+        }
         if m == "POST", p.count == 3, p[0] == "apps", p[2] == "sign" {
             guard let b = decode(req.body, SignBody.self) else { return bad() }
             let ok = onMain { self.state?.serverSign(appID: p[1], deviceUDID: b.device_udid) ?? false }
@@ -132,6 +147,7 @@ public final class SignServer {
         return httpResponse(200, "OK", data)
     }
     private func bad() -> Data { httpResponse(400, "Bad Request", Data("{\"error\":\"bad request\"}".utf8)) }
+    private func notFound() -> Data { httpResponse(404, "Not Found", Data("{\"error\":\"not found\"}".utf8)) }
     private func decode<T: Decodable>(_ body: Data, _ t: T.Type) -> T? {
         try? JSONDecoder().decode(T.self, from: body)
     }
@@ -153,7 +169,8 @@ extension SignState {
     func dtoDevices() -> [DeviceDTO] { devices.map { DeviceDTO(udid: $0.udid, name: $0.name) } }
     func dtoApps() -> [AppDTO] {
         apps.map { AppDTO(id: $0.id.uuidString, name: $0.name, team_id: $0.teamID,
-                          source: $0.sourcePath ?? $0.githubRepo) }
+                          source: $0.sourcePath ?? $0.githubRepo ?? $0.ipaURL,
+                          github_repo: $0.githubRepo, ipa_url: $0.ipaURL) }
     }
     func dtoRecords() -> [RecordDTO] {
         records.map {
@@ -169,7 +186,24 @@ extension SignState {
     }
     func serverAddApp(name: String, teamID: String, githubRepo: String?, ipaURL: String?) -> Bool {
         guard teams.contains(where: { $0.teamID == teamID }) else { return false }
-        addApp(SignApp(name: name, sourcePath: nil, githubRepo: githubRepo, teamID: teamID))
+        addApp(SignApp(name: name, sourcePath: nil, githubRepo: githubRepo, ipaURL: ipaURL, teamID: teamID))
+        return true
+    }
+    func serverUpdateApp(appID: String, name: String, teamID: String, githubRepo: String?, ipaURL: String?) -> Bool {
+        guard let existing = apps.first(where: { $0.id.uuidString == appID }),
+              teams.contains(where: { $0.teamID == teamID }) else { return false }
+        var app = existing
+        app.name = name
+        app.teamID = teamID
+        app.githubRepo = githubRepo
+        app.ipaURL = ipaURL
+        app.sourcePath = nil          // app iOS chỉ chỉnh github/url; bỏ path local cũ nếu có
+        updateApp(app)
+        return true
+    }
+    func serverDeleteApp(appID: String) -> Bool {
+        guard let app = apps.first(where: { $0.id.uuidString == appID }) else { return false }
+        deleteApp(app)
         return true
     }
     func serverSign(appID: String, deviceUDID: String) -> Bool {

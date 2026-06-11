@@ -130,6 +130,13 @@ struct SignView: View {
     private var devicesSection: some View {
         GroupBox("Thiết bị") {
             VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    Spacer()
+                    Button { state.refreshEnvironment() } label: {
+                        Label("Quét lại", systemImage: "arrow.clockwise")
+                    }
+                    .controlSize(.small)
+                }
                 ForEach(state.devices) { d in
                     HStack {
                         VStack(alignment: .leading) {

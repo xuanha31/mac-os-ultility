@@ -8,41 +8,34 @@ struct PowerView: View {
     @ObservedObject var battery: BatteryState
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                Text("Nguồn").font(.largeTitle.bold())
-
-                preventSleepCard
-                hibernateOnLockCard
-                hibernateCard
-                batteryLimitCard
-
-                Spacer(minLength: 0)
-            }
-            .padding(24)
+        ProScreen(title: "Nguồn & Pin") {
+            preventSleepCard
+            hibernateOnLockCard
+            hibernateCard
+            batteryLimitCard
         }
     }
 
     // MARK: - Chống tự ngủ
 
     private var preventSleepCard: some View {
-        card {
+        ProCard(spacing: Theme.gap) {
             HStack {
-                Label("Không tự động ngủ", systemImage: "cup.and.saucer")
-                    .font(.headline)
-                Spacer()
+                CardHeader(icon: "cup.and.saucer", title: "không tự động ngủ")
                 Toggle("", isOn: Binding(
                     get: { power.isPreventingSleep },
                     set: { power.setPreventSleep($0) }
                 ))
                 .toggleStyle(.switch)
                 .labelsHidden()
+                .tint(Theme.accent)
             }
             Text("Giữ máy luôn thức bằng `caffeinate -d -i -m -s` (chặn ngủ màn hình, idle, đĩa và hệ thống).")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.system(size: 12.5))
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
             if power.isPreventingSleep {
-                Label("Đang chống tự ngủ.", systemImage: "checkmark.circle.fill")
-                    .font(.callout).foregroundStyle(.green)
+                statusLabel("Đang chống tự ngủ.", icon: "checkmark.circle.fill", color: Theme.green)
             }
         }
     }
@@ -50,23 +43,23 @@ struct PowerView: View {
     // MARK: - Hibernate khi khoá màn hình
 
     private var hibernateOnLockCard: some View {
-        card {
+        ProCard(spacing: Theme.gap) {
             HStack {
-                Label("Hibernate khi khoá màn hình", systemImage: "lock.zzz")
-                    .font(.headline)
-                Spacer()
+                CardHeader(icon: "lock.zzz", title: "hibernate khi khoá màn hình")
                 Toggle("", isOn: Binding(
                     get: { power.isHibernateOnLockEnabled },
                     set: { power.setHibernateOnLock($0) }
                 ))
                 .toggleStyle(.switch)
                 .labelsHidden()
+                .tint(Theme.accent)
             }
             Text("Khi macOS khoá phiên làm việc, app tự đổi sang hibernatemode 25 rồi đưa máy vào hibernate. Lần đầu cần cho phép privileged helper; các lần sau không cần nhập mật khẩu.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.system(size: 12.5))
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
             if power.isHibernateOnLockEnabled {
-                Label("Đang bật hibernate khi khoá màn hình.", systemImage: "checkmark.circle.fill")
-                    .font(.callout).foregroundStyle(.green)
+                statusLabel("Đang bật hibernate khi khoá màn hình.", icon: "checkmark.circle.fill", color: Theme.green)
             }
         }
     }
@@ -74,19 +67,22 @@ struct PowerView: View {
     // MARK: - Hibernate
 
     private var hibernateCard: some View {
-        card {
+        ProCard(spacing: Theme.gap) {
             HStack {
-                Label("Hibernate (ngủ đông)", systemImage: "moon.zzz")
-                    .font(.headline)
-                Spacer()
+                CardHeader(icon: "moon.zzz", title: "hibernate (ngủ đông)")
                 Button("Vào hibernate") { power.hibernateNow() }
                     .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
                     .disabled(power.isHibernating)
             }
             Text("Tạm dừng mọi ứng dụng, khoá màn hình rồi đưa máy vào hibernate (ghi RAM ra đĩa). Lần đầu cần cho phép privileged helper; các lần sau không cần nhập mật khẩu.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.system(size: 12.5))
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
             if !power.statusMessage.isEmpty {
-                Text(power.statusMessage).font(.callout).foregroundStyle(.secondary)
+                Text(power.statusMessage)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Theme.textTertiary)
             }
         }
     }
@@ -94,20 +90,18 @@ struct PowerView: View {
     // MARK: - Giới hạn sạc
 
     private var batteryLimitCard: some View {
-        card {
+        ProCard(spacing: Theme.gap) {
             HStack {
-                Label("Giới hạn sạc tối đa", systemImage:
-                        battery.isLimitEnabled ? "powerplug" : "battery.100.bolt")
-                    .font(.headline)
-                Spacer()
+                CardHeader(icon: battery.isLimitEnabled ? "powerplug" : "battery.100.bolt",
+                           title: "giới hạn sạc tối đa")
                 if let s = battery.snapshot {
                     let w = s.chargingWatts ?? 0
                     Label(String(format: "%.1f W", w), systemImage: w > 0 ? "bolt.fill" : "bolt.slash")
-                        .font(.callout.monospacedDigit())
-                        .foregroundStyle(w > 0 ? .green : .secondary)
+                        .font(Theme.mono(12.5))
+                        .foregroundStyle(w > 0 ? Theme.green : Theme.textSecondary)
                     Text("\(s.percent)%")
-                        .font(.title3.monospacedDigit().bold())
-                        .foregroundStyle(s.onACPower ? .green : .primary)
+                        .font(Theme.mono(16))
+                        .foregroundStyle(s.onACPower ? Theme.green : Theme.textPrimary)
                 }
                 if battery.isBusy { ProgressView().controlSize(.small) }
                 Toggle("", isOn: Binding(
@@ -116,6 +110,7 @@ struct PowerView: View {
                 ))
                 .toggleStyle(.switch)
                 .labelsHidden()
+                .tint(Theme.accent)
                 .disabled(!battery.controlAvailable || battery.isBusy)
             }
 
@@ -123,51 +118,58 @@ struct PowerView: View {
                 HStack(spacing: 6) {
                     if let w = s.chargingWatts {
                         Text(String(format: "Đang nạp %.1f W vào pin", w))
+                            .foregroundStyle(Theme.textSecondary)
                     } else {
                         Text("Đã cắm adapter — pin không nạp thêm")
+                            .foregroundStyle(Theme.textSecondary)
                     }
                     if let a = s.adapterWatts {
-                        Text(String(format: "(adapter %.0f W)", a)).foregroundStyle(.tertiary)
+                        Text(String(format: "(adapter %.0f W)", a)).foregroundStyle(Theme.textTertiary)
                     }
                 }
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.system(size: 12.5))
             }
 
             Stepper(value: $battery.maxPercent, in: 20...100, step: 5) {
                 Text("Sạc tối đa tới: \(battery.maxPercent)%")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Theme.textPrimary)
             }
             .disabled(!battery.controlAvailable)
 
             if battery.needsApply {
                 Button("Áp dụng \(battery.maxPercent)%") { battery.applyCurrent() }
                     .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
                     .disabled(battery.isBusy)
             }
 
             Text("Khi đạt ngưỡng, máy ngừng sạc và chạy bằng nguồn điện trực tiếp — pin được giữ ở mức đó để giảm chai. Đổi ngưỡng dùng privileged helper sau khi đã được cho phép.")
-                .font(.callout).foregroundStyle(.secondary)
+                .font(.system(size: 12.5))
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
 
             if battery.isLimitEnabled {
-                Label("Đang giới hạn ở \(battery.appliedLimit)%.", systemImage: "checkmark.circle.fill")
-                    .font(.callout).foregroundStyle(.green)
+                statusLabel("Đang giới hạn ở \(battery.appliedLimit)%.", icon: "checkmark.circle.fill", color: Theme.green)
             }
 
             if !battery.controlAvailable {
-                Label("Thiết bị không có khoá BCLM — model này không hỗ trợ giới hạn sạc.",
-                      systemImage: "exclamationmark.triangle")
-                    .font(.callout).foregroundStyle(.orange)
+                statusLabel("Thiết bị không có khoá BCLM — model này không hỗ trợ giới hạn sạc.",
+                            icon: "exclamationmark.triangle", color: Theme.orange)
             } else if !battery.statusMessage.isEmpty {
-                Text(battery.statusMessage).font(.callout).foregroundStyle(.secondary)
+                Text(battery.statusMessage)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Theme.textTertiary)
             }
         }
     }
 
     // MARK: - Helper
 
-    private func card<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 12, content: content)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(16)
-            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+    private func statusLabel(_ text: String, icon: String, color: Color) -> some View {
+        Label(text, systemImage: icon)
+            .font(.system(size: 12.5))
+            .foregroundStyle(color)
+            .fixedSize(horizontal: false, vertical: true)
     }
 }

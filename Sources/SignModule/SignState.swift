@@ -177,16 +177,38 @@ public final class SignState: ObservableObject {
         }
         if let repo = app.githubRepo, !repo.isEmpty {
             log("→ Lấy IPA mới nhất từ GitHub \(repo)...\n")
-            let apiURL = URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!
-            let (data, _) = try await URLSession.shared.data(from: apiURL)
+            let token = app.githubToken?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let hasToken = !(token ?? "").isEmpty
+            if hasToken { log("  (dùng token cho repo private)\n") }
+
+            var apiReq = URLRequest(url: URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!)
+            apiReq.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+            if hasToken { apiReq.setValue("Bearer \(token!)", forHTTPHeaderField: "Authorization") }
+            let (data, apiResp) = try await URLSession.shared.data(for: apiReq)
+            if let code = (apiResp as? HTTPURLResponse)?.statusCode, !(200..<300).contains(code) {
+                let hint = (code == 404 && !hasToken) ? " — repo private cần token (hoặc repo chưa có release)." : ""
+                throw SignError("GitHub trả HTTP \(code) khi đọc release của \(repo).\(hint)")
+            }
             guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                   let assets = json["assets"] as? [[String: Any]],
-                  let asset = assets.first(where: { ($0["name"] as? String)?.hasSuffix(".ipa") == true }),
-                  let urlStr = asset["browser_download_url"] as? String,
-                  let url = URL(string: urlStr) else {
+                  let asset = assets.first(where: { ($0["name"] as? String)?.hasSuffix(".ipa") == true }) else {
                 throw SignError("Không tìm thấy asset .ipa trong release mới nhất của \(repo).")
             }
-            let (tmp, _) = try await URLSession.shared.download(from: url)
+
+            let tmp: URL
+            if hasToken, let assetAPI = asset["url"] as? String, let u = URL(string: assetAPI) {
+                // Repo private: phải tải qua asset API + Accept octet-stream (browser_download_url
+                // cần phiên đăng nhập). GitHub redirect sang CDN — strip Authorization để CDN không 400.
+                var dlReq = URLRequest(url: u)
+                dlReq.setValue("application/octet-stream", forHTTPHeaderField: "Accept")
+                dlReq.setValue("Bearer \(token!)", forHTTPHeaderField: "Authorization")
+                (tmp, _) = try await Self.ghDownloadSession.download(for: dlReq)
+            } else {
+                guard let urlStr = asset["browser_download_url"] as? String, let url = URL(string: urlStr) else {
+                    throw SignError("Asset .ipa không có link tải hợp lệ.")
+                }
+                (tmp, _) = try await URLSession.shared.download(from: url)
+            }
             return try Self.moveDownloadToSupport(tmp)
         }
         if let urlStr = app.ipaURL, !urlStr.isEmpty {
@@ -197,6 +219,11 @@ public final class SignState: ObservableObject {
         }
         throw SignError("App chưa có nguồn IPA (file local, GitHub repo, hoặc URL).")
     }
+
+    /// Session tải asset GitHub private: strip header Authorization khi GitHub redirect sang CDN
+    /// (S3/Azure) — nếu giữ lại, storage backend thường trả 400.
+    private static let ghDownloadSession = URLSession(
+        configuration: .default, delegate: GHRedirectStripper(), delegateQueue: nil)
 
     /// Di chuyển file IPA vừa tải về thư mục hỗ trợ với tên duy nhất.
     private static func moveDownloadToSupport(_ tmp: URL) throws -> URL {
@@ -270,5 +297,18 @@ public final class SignState: ObservableObject {
               let m = r.firstMatch(in: certName, range: NSRange(certName.startIndex..., in: certName)),
               let range = Range(m.range(at: 1), in: certName) else { return nil }
         return String(certName[range])
+    }
+}
+
+/// Khi tải asset GitHub private, GitHub redirect (302) sang CDN bằng signed URL tự xác thực.
+/// Ta gỡ header `Authorization` trên redirect để CDN không từ chối request (400).
+private final class GHRedirectStripper: NSObject, URLSessionTaskDelegate {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        var req = request
+        req.setValue(nil, forHTTPHeaderField: "Authorization")
+        completionHandler(req)
     }
 }

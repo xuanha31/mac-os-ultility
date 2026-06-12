@@ -30,13 +30,16 @@ public struct SignApp: Codable, Identifiable, Hashable {
     public var name: String
     public var sourcePath: String?            // đường dẫn IPA local
     public var githubRepo: String?            // "owner/repo" — lấy release mới nhất
+    public var githubToken: String?           // PAT để tải release của repo private (tùy chọn)
     public var ipaURL: String?                // URL tải IPA trực tiếp (http/https)
     public var teamID: String                 // team/account dùng để ký app này
 
     public init(id: UUID = UUID(), name: String, sourcePath: String? = nil,
-                githubRepo: String? = nil, ipaURL: String? = nil, teamID: String) {
+                githubRepo: String? = nil, githubToken: String? = nil,
+                ipaURL: String? = nil, teamID: String) {
         self.id = id; self.name = name; self.sourcePath = sourcePath
-        self.githubRepo = githubRepo; self.ipaURL = ipaURL; self.teamID = teamID
+        self.githubRepo = githubRepo; self.githubToken = githubToken
+        self.ipaURL = ipaURL; self.teamID = teamID
     }
 }
 

@@ -7,54 +7,59 @@ struct FanView: View {
     @ObservedObject var state: FanState
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                header
-                if state.fans.isEmpty {
-                    emptyState
-                } else {
-                    ForEach(state.fans) { fan in
-                        FanCard(fan: fan, controlEnabled: state.controlEnabled) { rpm in
-                            state.setMinSpeed(rpm, fanIndex: fan.id)
-                        } onReset: {
-                            state.resetToAuto(fanIndex: fan.id)
-                        }
+        ProScreen(title: "Quạt") {
+            header
+            if state.fans.isEmpty {
+                emptyState
+            } else {
+                ForEach(state.fans) { fan in
+                    FanCard(fan: fan, controlEnabled: state.controlEnabled) { rpm in
+                        state.setMinSpeed(rpm, fanIndex: fan.id)
+                    } onReset: {
+                        state.resetToAuto(fanIndex: fan.id)
                     }
                 }
-                if !state.fans.isEmpty && !state.controlEnabled {
+            }
+            if !state.fans.isEmpty && !state.controlEnabled {
+                ProCard {
                     Label("Thiết bị này không hỗ trợ điều chỉnh tốc độ quạt (Apple Silicon). Hiện chỉ đọc.",
                           systemImage: "exclamationmark.triangle")
-                        .font(.callout)
-                        .foregroundStyle(.orange)
-                        .padding(.top, 8)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Theme.orange)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                if !state.statusMessage.isEmpty {
-                    Text(state.statusMessage).font(.callout).foregroundStyle(.secondary)
-                }
-                Spacer(minLength: 0)
             }
-            .padding(24)
+            if !state.statusMessage.isEmpty {
+                Text(state.statusMessage)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Theme.textSecondary)
+            }
         }
     }
 
     private var header: some View {
-        HStack {
-            Text("Quạt").font(.largeTitle.bold())
+        HStack(spacing: 8) {
             Spacer()
             if state.isBusy { ProgressView().controlSize(.small) }
             Button("Làm mới") { state.refresh() }
+                .tint(Theme.accent)
         }
     }
 
     private var emptyState: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "fanblades").font(.system(size: 48)).foregroundStyle(.secondary)
-            Text("Không tìm thấy quạt.\nMacBook Air (Apple Silicon) không có quạt.")
-                .multilineTextAlignment(.center)
-                .foregroundStyle(.secondary)
+        ProCard {
+            VStack(spacing: 12) {
+                Image(systemName: "fanblades")
+                    .font(.system(size: 48))
+                    .foregroundStyle(Theme.textTertiary)
+                Text("Không tìm thấy quạt.\nMacBook Air (Apple Silicon) không có quạt.")
+                    .multilineTextAlignment(.center)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Theme.textSecondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 26)
         }
-        .frame(maxWidth: .infinity)
-        .padding(40)
     }
 }
 
@@ -75,48 +80,47 @@ struct FanCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Label("Quạt \(fan.id + 1)", systemImage: "fanblades")
-                    .font(.headline)
-                Spacer()
-                Text("\(Int(fan.currentRPM)) RPM")
-                    .font(.title3.monospacedDigit().bold())
-            }
+        // Thanh tiến trình tốc độ hiện tại
+        let fraction = fan.maxRPM > fan.minRPM
+            ? (fan.currentRPM - fan.minRPM) / (fan.maxRPM - fan.minRPM)
+            : 0
+        ProCard {
+            CardHeader(icon: "fanblades", title: "Quạt \(fan.id + 1)",
+                       value: "\(Int(fan.currentRPM)) RPM",
+                       valueColor: fanColor(fraction: fraction))
 
-            // Thanh tiến trình tốc độ hiện tại
-            let fraction = fan.maxRPM > fan.minRPM
-                ? (fan.currentRPM - fan.minRPM) / (fan.maxRPM - fan.minRPM)
-                : 0
-            ProgressView(value: max(0, min(1, fraction)))
-                .progressViewStyle(.linear)
-                .tint(fanColor(fraction: fraction))
+            StatBar(fraction: max(0, min(1, fraction)), color: fanColor(fraction: fraction))
 
             HStack {
-                Text("Min: \(Int(fan.minRPM))").font(.caption).foregroundStyle(.secondary)
+                Text("Min: \(Int(fan.minRPM))")
+                    .font(Theme.mono(11, .regular))
+                    .foregroundStyle(Theme.textTertiary)
                 Spacer()
-                Text("Max: \(Int(fan.maxRPM))").font(.caption).foregroundStyle(.secondary)
+                Text("Max: \(Int(fan.maxRPM))")
+                    .font(Theme.mono(11, .regular))
+                    .foregroundStyle(Theme.textTertiary)
             }
 
             if controlEnabled {
-                Divider()
+                Divider().overlay(Theme.border)
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Đặt tốc độ tối thiểu: \(Int(targetRPM)) RPM")
-                        .font(.callout)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(Theme.textSecondary)
                     Slider(value: $targetRPM, in: fan.minRPM...fan.maxRPM, step: 100)
+                        .tint(Theme.accent)
                     HStack {
                         Button("Áp dụng") { onSetMin(targetRPM) }
                             .buttonStyle(.borderedProminent)
+                            .tint(Theme.accent)
                         Button("Reset Auto") { onReset() }
                     }
                 }
             }
         }
-        .padding(16)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
     }
 
     private func fanColor(fraction: Double) -> Color {
-        fraction < 0.5 ? .green : fraction < 0.8 ? .orange : .red
+        fraction < 0.5 ? Theme.green : fraction < 0.8 ? Theme.orange : Theme.red
     }
 }

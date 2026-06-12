@@ -11,12 +11,13 @@ struct ClipboardView: View {
     var body: some View {
         VStack(spacing: 0) {
             actionBar
-            Divider()
+            Divider().overlay(Theme.border)
             HSplitView {
                 listPanel.frame(minWidth: 280, maxWidth: 360)
                 detailPanel
             }
         }
+        .background(Theme.bg)
         .confirmationDialog("Xóa toàn bộ lịch sử clipboard?", isPresented: $showClearConfirm) {
             Button("Xóa tất cả", role: .destructive) { state.clearAll() }
             Button("Hủy", role: .cancel) {}
@@ -27,7 +28,10 @@ struct ClipboardView: View {
 
     private var actionBar: some View {
         HStack(spacing: 12) {
-            Text("Clipboard").font(.title2.bold())
+            Text("CLIPBOARD")
+                .font(.system(size: 18, weight: .semibold))
+                .kerning(0.5)
+                .foregroundStyle(Theme.textPrimary)
             Spacer()
             Button {
                 state.captureFullScreen()
@@ -60,14 +64,15 @@ struct ClipboardView: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+        .background(Theme.bg)
     }
 
     private func shortcutBadge(_ text: String) -> some View {
         Text(text)
-            .font(.caption2.monospaced())
-            .foregroundStyle(.secondary)
+            .font(Theme.mono(10, .regular))
+            .foregroundStyle(Theme.textTertiary)
             .padding(.horizontal, 5).padding(.vertical, 1)
-            .background(.quaternary, in: RoundedRectangle(cornerRadius: 4))
+            .background(Theme.surface2, in: RoundedRectangle(cornerRadius: 4))
     }
 
     // MARK: - List panel
@@ -78,9 +83,9 @@ struct ClipboardView: View {
             filterBar
             // Hướng dẫn dán
             Text("Double-click (hoặc nút ⤴) để copy mục vào clipboard, rồi sang app cần dán bấm ⌘V.")
-                .font(.caption2).foregroundStyle(.tertiary)
+                .font(.caption2).foregroundStyle(Theme.textTertiary)
                 .padding(.horizontal, 10).padding(.bottom, 4)
-            Divider()
+            Divider().overlay(Theme.border)
             if state.filteredHistory.isEmpty {
                 emptyState
             } else {
@@ -90,8 +95,10 @@ struct ClipboardView: View {
                         Spacer(minLength: 0)
                         Button { state.paste(item) } label: { Image(systemName: "arrow.up.doc.on.clipboard") }
                             .buttonStyle(.borderless)
+                            .foregroundStyle(Theme.accent)
                             .help("Copy vào clipboard để dán")
                     }
+                    .listRowBackground(Color.clear)
                     .tag(item)
                     .contextMenu {
                         Button("Copy vào clipboard (để dán)") { state.paste(item) }
@@ -103,32 +110,43 @@ struct ClipboardView: View {
                     .onTapGesture(count: 2) { state.paste(item) }
                 }
                 .listStyle(.inset)
+                .scrollContentBackground(.hidden)
+                .background(Theme.bg)
             }
 
             if !state.statusMessage.isEmpty {
                 Text(state.statusMessage)
                     .font(.caption)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.textSecondary)
                     .padding(6)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.bar)
+                    .background(Theme.surface)
             }
         }
+        .background(Theme.bg)
     }
 
     private var searchBar: some View {
         HStack {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+            Image(systemName: "magnifyingglass").foregroundStyle(Theme.textTertiary)
             TextField("Tìm kiếm…", text: $state.searchText)
                 .textFieldStyle(.plain)
+                .foregroundStyle(Theme.textPrimary)
             if !state.searchText.isEmpty {
                 Button { state.searchText = "" } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(Theme.textTertiary)
                 }
                 .buttonStyle(.borderless)
             }
         }
-        .padding(.horizontal, 12)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radius)
+                .strokeBorder(Theme.border, lineWidth: 1)
+        )
+        .padding(.horizontal, 10)
         .padding(.vertical, 8)
     }
 
@@ -141,17 +159,17 @@ struct ClipboardView: View {
                     .padding(.vertical, 4)
                     .background(
                         state.filterType == type
-                            ? Color.accentColor.opacity(0.15)
+                            ? Theme.accent.opacity(0.15)
                             : Color.clear,
                         in: RoundedRectangle(cornerRadius: 6)
                     )
-                    .foregroundStyle(state.filterType == type ? .primary : .secondary)
+                    .foregroundStyle(state.filterType == type ? Theme.accent : Theme.textSecondary)
                     .font(.caption)
             }
             Spacer()
             Text("\(state.filteredHistory.count) mục")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+                .font(Theme.mono(10, .regular))
+                .foregroundStyle(Theme.textTertiary)
                 .padding(.trailing, 8)
         }
         .padding(.horizontal, 8)
@@ -162,11 +180,12 @@ struct ClipboardView: View {
         VStack(spacing: 12) {
             Image(systemName: "clipboard")
                 .font(.system(size: 36))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.textTertiary)
             Text(state.history.isEmpty ? "Chưa có mục nào trong lịch sử." : "Không có kết quả.")
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Theme.textSecondary)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.bg)
     }
 
     // MARK: - Detail panel
@@ -184,14 +203,15 @@ struct ClipboardView: View {
                 VStack(spacing: 16) {
                     Image(systemName: "clipboard")
                         .font(.system(size: 48))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.textTertiary)
                     Text("Chọn mục để xem chi tiết")
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(Theme.textSecondary)
                     Text("Double-click để dán vào clipboard")
                         .font(.caption)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Theme.textTertiary)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Theme.bg)
             }
         }
     }
@@ -211,15 +231,16 @@ struct ClipboardRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(item.content.displayTitle)
                     .font(.callout)
+                    .foregroundStyle(Theme.textPrimary)
                     .lineLimit(2)
                     .truncationMode(.tail)
                 HStack(spacing: 6) {
                     if let src = item.source {
-                        Text(src).font(.caption2).foregroundStyle(.tertiary)
+                        Text(src).font(.caption2).foregroundStyle(Theme.textTertiary)
                     }
                     Text(item.timestamp, style: .relative)
                         .font(.caption2)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(Theme.textTertiary)
                 }
             }
         }
@@ -230,27 +251,27 @@ struct ClipboardRow: View {
     private var contentIcon: some View {
         switch item.content {
         case .text:
-            Image(systemName: "doc.text").font(.system(size: 14)).foregroundStyle(.blue)
+            Image(systemName: "doc.text").font(.system(size: 14)).foregroundStyle(Theme.accent)
         case .image(let d):
             if let ns = NSImage(data: d) {
                 Image(nsImage: ns).resizable().scaledToFill()
                     .clipped()
             } else {
-                Image(systemName: "photo").font(.system(size: 14)).foregroundStyle(.purple)
+                Image(systemName: "photo").font(.system(size: 14)).foregroundStyle(Theme.purple)
             }
         case .fileURL:
-            Image(systemName: "doc.badge.arrow.up").font(.system(size: 14)).foregroundStyle(.orange)
+            Image(systemName: "doc.badge.arrow.up").font(.system(size: 14)).foregroundStyle(Theme.orange)
         case .other:
-            Image(systemName: "questionmark.square").font(.system(size: 14)).foregroundStyle(.secondary)
+            Image(systemName: "questionmark.square").font(.system(size: 14)).foregroundStyle(Theme.textSecondary)
         }
     }
 
     private var iconBackground: Color {
         switch item.content {
-        case .text:    return .blue.opacity(0.1)
-        case .image:   return .purple.opacity(0.1)
-        case .fileURL: return .orange.opacity(0.1)
-        case .other:   return .secondary.opacity(0.1)
+        case .text:    return Theme.accent.opacity(0.12)
+        case .image:   return Theme.purple.opacity(0.12)
+        case .fileURL: return Theme.orange.opacity(0.12)
+        case .other:   return Theme.surface2
         }
     }
 }
@@ -267,29 +288,34 @@ struct ClipboardDetailView: View {
             // Header
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(typeLabel).font(.headline)
+                    Text(typeLabel)
+                        .font(.headline)
+                        .foregroundStyle(Theme.textPrimary)
                     HStack(spacing: 8) {
                         if let src = item.source {
-                            Label(src, systemImage: "app").font(.caption).foregroundStyle(.secondary)
+                            Label(src, systemImage: "app").font(.caption).foregroundStyle(Theme.textSecondary)
                         }
                         Text(item.timestamp, format: .dateTime.day().month().year().hour().minute())
-                            .font(.caption).foregroundStyle(.secondary)
+                            .font(.caption).foregroundStyle(Theme.textSecondary)
                     }
                 }
                 Spacer()
-                Button("Dán") { onPaste() }.buttonStyle(.borderedProminent)
+                Button("Dán") { onPaste() }.buttonStyle(.borderedProminent).tint(Theme.accent)
                 Button(role: .destructive) { onDelete() } label: {
                     Image(systemName: "trash")
                 }
+                .tint(Theme.red)
             }
             .padding(16)
-            Divider()
+            Divider().overlay(Theme.border)
 
             // Content preview
             ScrollView {
                 contentPreview.padding(16)
             }
+            .scrollContentBackground(.hidden)
         }
+        .background(Theme.bg)
     }
 
     private var typeLabel: String {
@@ -307,6 +333,7 @@ struct ClipboardDetailView: View {
         case .text(let s):
             Text(s)
                 .font(.system(.body, design: .monospaced))
+                .foregroundStyle(Theme.textPrimary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
@@ -317,10 +344,10 @@ struct ClipboardDetailView: View {
                         .resizable()
                         .scaledToFit()
                         .frame(maxHeight: 400)
-                        .cornerRadius(8)
+                        .cornerRadius(Theme.radius)
                     Text("\(Int(ns.size.width)) × \(Int(ns.size.height)) px")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                        .font(Theme.mono(11, .regular))
+                        .foregroundStyle(Theme.textSecondary)
                 }
             }
 
@@ -329,16 +356,17 @@ struct ClipboardDetailView: View {
                 ForEach(paths, id: \.self) { path in
                     HStack(spacing: 8) {
                         Image(systemName: "doc")
-                            .foregroundStyle(.orange)
+                            .foregroundStyle(Theme.orange)
                         Text(path)
                             .font(.system(.callout, design: .monospaced))
+                            .foregroundStyle(Theme.textPrimary)
                             .textSelection(.enabled)
                     }
                 }
             }
 
         case .other(let t):
-            Text("Loại: \(t) — không có preview.").foregroundStyle(.secondary)
+            Text("Loại: \(t) — không có preview.").foregroundStyle(Theme.textSecondary)
         }
     }
 }

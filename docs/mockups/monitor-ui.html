@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<title>MacUtil — Mockup 3 phong cách</title>
+<style>
+  :root{
+    font-family:-apple-system,"SF Pro Display","Helvetica Neue",Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    /* "wallpaper" để material đọc được độ trong */
+    background:linear-gradient(135deg,#3a6ea5 0%,#7b4f9e 45%,#c2557a 100%);
+    padding:34px;
+  }
+  .gallery{display:flex;flex-direction:column;gap:40px;max-width:1240px;margin:0 auto}
+  .caption{color:#fff;margin:0 4px 12px}
+  .caption h2{font-size:20px;font-weight:700;letter-spacing:.2px}
+  .caption p{font-size:13px;opacity:.85;margin-top:2px}
+
+  /* ---------- Khung cửa sổ macOS ---------- */
+  .win{border-radius:12px;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,.35),0 2px 6px rgba(0,0,0,.25);display:flex;flex-direction:column;height:640px}
+  .titlebar{height:40px;display:flex;align-items:center;gap:8px;padding:0 14px;flex:0 0 auto}
+  .lights{display:flex;gap:8px}
+  .lights i{width:12px;height:12px;border-radius:50%;display:block}
+  .lights .r{background:#ff5f57}.lights .y{background:#febc2e}.lights .g{background:#28c840}
+  .tt{font-size:13px;font-weight:600;opacity:.7;margin-left:6px}
+  .body{display:flex;flex:1;min-height:0}
+
+  /* ---------- Sidebar (chung) ---------- */
+  .side{width:230px;flex:0 0 auto;padding:10px 10px 14px;overflow:hidden}
+  .side .app{font-size:15px;font-weight:700;padding:6px 10px 12px}
+  .side .sec{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;opacity:.5;padding:14px 10px 5px}
+  .side .it{display:flex;align-items:center;gap:9px;padding:6px 10px;border-radius:7px;font-size:13.5px;cursor:default}
+  .side .it svg{width:17px;height:17px;flex:0 0 auto}
+  .side .it.sel{font-weight:600}
+
+  .detail{flex:1;min-width:0;overflow:auto}
+  .h1{font-size:24px;font-weight:700;padding:22px 24px 4px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .spark{width:100%;height:64px;display:block}
+  .pct{font-variant-numeric:tabular-nums;font-feature-settings:"tnum"}
+
+  /* ================= STYLE A — Dashboard hiện đại ================= */
+  .style-a .win{background:rgba(246,247,249,.86);backdrop-filter:blur(30px) saturate(160%);-webkit-backdrop-filter:blur(30px) saturate(160%)}
+  .style-a .titlebar{background:rgba(255,255,255,.4);border-bottom:1px solid rgba(0,0,0,.07)}
+  .style-a .side{background:rgba(255,255,255,.0);color:#1d1d1f}
+  .style-a .side .it.sel{background:#0a84ff;color:#fff}
+  .style-a .side .it.sel svg{color:#fff}
+  .style-a .side .it:not(.sel) svg{color:#0a84ff}
+  .style-a .detail{color:#1d1d1f}
+  .style-a .pad{padding:8px 24px 24px;display:flex;flex-direction:column;gap:16px}
+  .style-a .card{background:#fff;border:1px solid rgba(0,0,0,.06);border-radius:14px;padding:16px 18px;box-shadow:0 1px 2px rgba(0,0,0,.05),0 8px 24px rgba(0,0,0,.04)}
+  .style-a .ch{display:flex;align-items:center;gap:11px;margin-bottom:6px}
+  .style-a .tile{width:34px;height:34px;border-radius:9px;display:flex;align-items:center;justify-content:center;color:#fff;flex:0 0 auto}
+  .style-a .tile svg{width:19px;height:19px}
+  .style-a .ttl{font-size:13px;font-weight:600;opacity:.6}
+  .style-a .big{margin-left:auto;font-size:21px;font-weight:700}
+  .style-a .bar{height:8px;border-radius:99px;background:rgba(0,0,0,.08);overflow:hidden}
+  .style-a .bar>i{display:block;height:100%;border-radius:99px}
+  .style-a .row{display:flex;align-items:center;justify-content:space-between;font-size:14px}
+  .style-a .muted{opacity:.55;font-size:13px}
+
+  /* ================= STYLE B — macOS native (System Settings) ================= */
+  .style-b .win{background:#ececec;color:#1d1d1f}
+  .style-b .titlebar{background:linear-gradient(#fbfbfb,#f1f1f1);border-bottom:1px solid #d8d8d8}
+  .style-b .side{background:#e6e6e6}
+  .style-b .side .it.sel{background:#c9c9ce}
+  .style-b .side .it svg{color:#5b5b60}
+  .style-b .side .it.sel svg{color:#1d1d1f}
+  .style-b .detail{background:#ececec}
+  .style-b .pad{padding:10px 26px 26px;max-width:640px}
+  .style-b .group{background:#fff;border-radius:10px;border:1px solid rgba(0,0,0,.06);overflow:hidden;margin-bottom:18px}
+  .style-b .gr{display:flex;align-items:center;gap:12px;padding:11px 15px;font-size:13.5px;border-bottom:1px solid #eee}
+  .style-b .gr:last-child{border-bottom:none}
+  .style-b .gr .lbl{flex:1}
+  .style-b .gr .val{font-variant-numeric:tabular-nums;opacity:.6}
+  .style-b .gr .dot{width:22px;height:22px;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#fff}
+  .style-b .gr .dot svg{width:14px;height:14px}
+  .style-b .bar{flex:1;height:6px;border-radius:99px;background:#e6e6e6;overflow:hidden}
+  .style-b .bar>i{display:block;height:100%}
+  .style-b .grouptitle{font-size:12px;font-weight:600;opacity:.5;padding:0 4px 6px;text-transform:uppercase;letter-spacing:.4px}
+
+  /* ================= STYLE C — Pro tối giản (dark) ================= */
+  .style-c .win{background:#16181d;color:#cdd3de;font-family:-apple-system,"SF Mono",ui-monospace,Menlo,monospace}
+  .style-c .titlebar{background:#1c1f26;border-bottom:1px solid #000}
+  .style-c .tt{opacity:.5}
+  .style-c .side{background:#1a1d23;color:#9aa3b2}
+  .style-c .side .app{color:#e6eaf0}
+  .style-c .side .it.sel{background:#252a33;color:#e6eaf0}
+  .style-c .side .it.sel svg{color:#4cc2ff}
+  .style-c .side .it svg{color:#6b7688}
+  .style-c .detail{background:#16181d}
+  .style-c .h1{color:#e6eaf0;font-weight:600;font-size:18px;letter-spacing:.3px}
+  .style-c .pad{padding:6px 22px 22px;display:flex;flex-direction:column;gap:10px}
+  .style-c .card{background:#1c1f26;border:1px solid #262b34;border-radius:8px;padding:12px 14px}
+  .style-c .ch{display:flex;align-items:center;gap:8px}
+  .style-c .glyph{color:#4cc2ff;display:flex}.style-c .glyph svg{width:15px;height:15px}
+  .style-c .ttl{font-size:12px;letter-spacing:1px;text-transform:uppercase;color:#7d8696}
+  .style-c .big{margin-left:auto;font-size:16px;font-weight:600;color:#e6eaf0}
+  .style-c .bar{height:6px;border-radius:3px;background:#262b34;overflow:hidden;margin-top:8px}
+  .style-c .bar>i{display:block;height:100%;background:#4cc2ff}
+  .style-c .row{display:flex;justify-content:space-between;font-size:12.5px;color:#9aa3b2;margin-top:4px}
+  .style-c .row b{color:#cdd3de;font-weight:600}
+</style>
+</head>
+<body>
+<div class="gallery" id="gallery"></div>
+
+<script>
+/* ---------- Icon set (stroke, currentColor) ---------- */
+const I = {
+  gauge:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 18a8 8 0 1 1 16 0"/><path d="M12 18l4-5"/></svg>',
+  db:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="6" rx="7" ry="3"/><path d="M5 6v12c0 1.7 3.1 3 7 3s7-1.3 7-3V6"/><path d="M5 12c0 1.7 3.1 3 7 3s7-1.3 7-3"/></svg>',
+  term:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M7 9l3 3-3 3M13 15h4"/></svg>',
+  git:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><circle cx="18" cy="9" r="2.4"/><path d="M6 8.4v7.2M8.2 7.4C12 8 14.6 8 15.6 8.6"/></svg>',
+  sign:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 18c3-1 4-9 6-9s1 6 3 6 2-4 4-4"/><path d="M3 21h18"/></svg>',
+  trash:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg>',
+  key:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="6" width="18" height="12" rx="2"/><path d="M7 10h.01M11 10h.01M15 10h.01M8 14h8"/></svg>',
+  fan:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="1.6"/><path d="M12 11c-1-3 .5-7 .5-7-3 .5-4 4-3.5 6M13 12c3-1 7 .5 7 .5-.5-3-4-4-6-3.5M12 13c1 3-.5 7-.5 7 3-.5 4-4 3.5-6M11 12c-3 1-7-.5-7-.5.5 3 4 4 6 3.5"/></svg>',
+  clip:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="5" y="4" width="14" height="17" rx="2"/><rect x="9" y="2.5" width="6" height="3.2" rx="1.2"/></svg>',
+  power:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="8" width="15" height="9" rx="2"/><path d="M21 11v3"/><path d="M10 9l-2 4h3l-2 4"/></svg>',
+  dl:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v12M7 12l5 5 5-5M5 20h14"/></svg>',
+  up:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20V8M7 12l5-5 5 5M5 4h14"/></svg>',
+  ram:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M7 17v2M11 17v2M15 17v2M17 17v2"/></svg>',
+  temp:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 4a2 2 0 0 1 2 2v8a4 4 0 1 1-4 0V6a2 2 0 0 1 2-2z"/></svg>',
+};
+
+const SIDE = [
+  {sec:null, items:[['gauge','Giám sát hệ thống',true]]},
+  {sec:'Công cụ', items:[['db','Database'],['term','SSH'],['git','Git'],['sign','Sign (iOS)']]},
+  {sec:'Tiện ích', items:[['trash','Dọn dẹp'],['key','Đổi phím'],['fan','Quạt'],['clip','Clipboard'],['power','Nguồn & Pin']]},
+];
+
+const cpuData=[28,30,34,31,38,44,52,48,55,60,57,49,42,46,53,61,58,50,44,40,43,47,42];
+const ramData=[44,45,46,46,48,50,51,50,52,51,53,52,51,50,51,52,53,52,51,51,50,51,51];
+
+function sparkline(vals,color,w=300,h=64){
+  const n=vals.length, X=i=>i/(n-1)*w, Y=v=>h-(v/100)*h;
+  let d='M'+X(0)+','+Y(vals[0]); for(let i=1;i<n;i++) d+=' L'+X(i)+','+Y(vals[i]);
+  const id='g'+color.replace('#','')+Math.round(vals[0]);
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+    <defs><linearGradient id="${id}" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="${color}" stop-opacity=".30"/><stop offset="1" stop-color="${color}" stop-opacity="0"/>
+    </linearGradient></defs>
+    <path d="${d} L${w},${h} L0,${h} Z" fill="url(#${id})"/>
+    <path d="${d}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/></svg>`;
+}
+
+function sidebar(){
+  return SIDE.map(g=>{
+    const sec = g.sec?`<div class="sec">${g.sec}</div>`:'';
+    const its = g.items.map(([ic,name,sel])=>`<div class="it${sel?' sel':''}">${I[ic]}<span>${name}</span></div>`).join('');
+    return sec+its;
+  }).join('');
+}
+
+/* ---- Detail content per style ---- */
+function detailA(){
+  return `<div class="h1">Giám sát hệ thống</div><div class="pad">
+    <div class="grid2">
+      <div class="card"><div class="ch"><div class="tile" style="background:#0a84ff">${I.gauge}</div><div class="ttl">CPU</div><div class="big pct">42%</div></div>${sparkline(cpuData,'#0a84ff')}</div>
+      <div class="card"><div class="ch"><div class="tile" style="background:#30b94d">${I.ram}</div><div class="ttl">RAM</div><div class="big pct">51%</div></div>${sparkline(ramData,'#30b94d')}</div>
+    </div>
+    <div class="card"><div class="ch"><div class="tile" style="background:#30b94d">${I.ram}</div><div class="ttl">Bộ nhớ (RAM)</div><div class="big" style="font-size:15px">8.1 / 16 GB</div></div><div class="bar" style="margin-top:4px"><i style="width:51%;background:#30b94d"></i></div></div>
+    <div class="grid2">
+      <div class="card"><div class="ch"><div class="tile" style="background:#5e5ce6">${I.dl}</div><div class="ttl">Tải xuống</div></div><div class="big pct" style="margin-left:0;font-size:22px">1.2 MB/s</div></div>
+      <div class="card"><div class="ch"><div class="tile" style="background:#ff9f0a">${I.up}</div><div class="ttl">Tải lên</div></div><div class="big pct" style="margin-left:0;font-size:22px">80 KB/s</div></div>
+    </div>
+    <div class="card"><div class="ch"><div class="tile" style="background:#ff453a">${I.temp}</div><div class="ttl">Nhiệt độ CPU</div><div class="big pct">58°C</div></div><div class="bar" style="margin-top:4px"><i style="width:58%;background:linear-gradient(90deg,#ff9f0a,#ff453a)"></i></div></div>
+  </div>`;
+}
+function detailB(){
+  const r=(ic,col,lbl,val)=>`<div class="gr"><div class="dot" style="background:${col}">${I[ic]}</div><div class="lbl">${lbl}</div><div class="val">${val}</div></div>`;
+  const rbar=(ic,col,lbl,pct,val)=>`<div class="gr"><div class="dot" style="background:${col}">${I[ic]}</div><div class="lbl" style="flex:0 0 110px">${lbl}</div><div class="bar"><i style="width:${pct}%;background:${col}"></i></div><div class="val" style="margin-left:12px">${val}</div></div>`;
+  return `<div class="h1">Giám sát hệ thống</div><div class="pad">
+    <div class="grouptitle">Hiệu năng</div>
+    <div class="group">
+      ${rbar('gauge','#0a84ff','CPU',42,'42%')}
+      ${rbar('ram','#30b94d','RAM',51,'8.1 / 16 GB')}
+      ${rbar('temp','#ff453a','Nhiệt độ CPU',58,'58°C')}
+    </div>
+    <div class="grouptitle">Mạng</div>
+    <div class="group">
+      ${r('dl','#5e5ce6','Tải xuống','1.2 MB/s')}
+      ${r('up','#ff9f0a','Tải lên','80 KB/s')}
+    </div>
+    <div class="grouptitle">Quạt</div>
+    <div class="group">
+      ${r('fan','#8e8e93','Quạt 1','2 480 RPM')}
+      ${r('fan','#8e8e93','Quạt 2','2 510 RPM')}
+    </div>
+  </div>`;
+}
+function detailC(){
+  const card=(ic,ttl,big,extra)=>`<div class="card"><div class="ch"><span class="glyph">${I[ic]}</span><span class="ttl">${ttl}</span><span class="big pct">${big}</span></div>${extra||''}</div>`;
+  return `<div class="h1">SYSTEM MONITOR</div><div class="pad">
+    ${card('gauge','cpu','42%',sparkline(cpuData,'#4cc2ff'))}
+    ${card('ram','mem','51%','<div class="bar"><i style="width:51%"></i></div><div class="row"><span>used</span><b>8.1 / 16 GB</b></div>')}
+    ${card('dl','net','',`<div class="row"><span>↓ down</span><b>1.2 MB/s</b></div><div class="row"><span>↑ up</span><b>80 KB/s</b></div>`)}
+    ${card('temp','temp','58°C','<div class="bar"><i style="width:58%;background:#ff6b5e"></i></div>')}
+    ${card('fan','fan','2480 RPM','<div class="row"><span>fan 2</span><b>2510 RPM</b></div>')}
+  </div>`;
+}
+
+const WINDOWS=[
+  {cls:'style-a', cap:'A — Dashboard hiện đại (card + accent)', sub:'Card nổi material, icon trong ô bo tròn màu, số liệu to. Bắt mắt, hợp app nhiều số liệu.', body:detailA},
+  {cls:'style-b', cap:'B — macOS native (như System Settings)', sub:'Hàng gộp nhóm trên nền trắng, tối giản, đúng chuẩn Apple. An toàn, sạch.', body:detailB},
+  {cls:'style-c', cap:'C — Pro tối giản (dark, gọn)', sub:'Nền tối, mật độ cao, font mono cho số, accent xanh lạnh. Chất "developer tool".', body:detailC},
+];
+
+document.getElementById('gallery').innerHTML = WINDOWS.map(w=>`
+  <section class="${w.cls}">
+    <div class="caption"><h2>${w.cap}</h2><p>${w.sub}</p></div>
+    <div class="win">
+      <div class="titlebar"><span class="lights"><i class="r"></i><i class="y"></i><i class="g"></i></span><span class="tt">MacUtil</span></div>
+      <div class="body">
+        <aside class="side"><div class="app">MacUtil</div>${sidebar()}</aside>
+        <main class="detail">${w.body()}</main>
+      </div>
+    </div>
+  </section>`).join('');
+</script>
+</body>
+</html>

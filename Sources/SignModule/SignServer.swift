@@ -10,6 +10,7 @@ struct AppDTO: Codable {
     let source: String?            // mô tả gộp để hiển thị
     let github_repo: String?       // field riêng để app iOS prefill khi sửa
     let ipa_url: String?
+    let has_github_token: Bool     // có token chưa? (không trả token để tránh lộ)
 }
 struct RecordDTO: Codable {
     let id: String; let app_id: String; let device_udid: String
@@ -17,7 +18,7 @@ struct RecordDTO: Codable {
     let signed_at: String; let expires_at: String
 }
 private struct AddDeviceBody: Codable { let udid: String; let name: String? }
-private struct AddAppBody: Codable { let name: String; let team_id: String; let github_repo: String?; let ipa_url: String? }
+private struct AddAppBody: Codable { let name: String; let team_id: String; let github_repo: String?; let github_token: String?; let ipa_url: String? }
 private struct SignBody: Codable { let device_udid: String }
 
 /// HTTP API server nhúng trong MacUtil (Network.framework, không cần dep ngoài).
@@ -109,13 +110,15 @@ public final class SignServer {
         if m == "POST", p == ["apps"] {
             guard let b = decode(req.body, AddAppBody.self) else { return bad() }
             let ok = onMain { self.state?.serverAddApp(name: b.name, teamID: b.team_id,
-                                                       githubRepo: b.github_repo, ipaURL: b.ipa_url) ?? false }
+                                                       githubRepo: b.github_repo, githubToken: b.github_token,
+                                                       ipaURL: b.ipa_url) ?? false }
             return json(["ok": ok])
         }
         if m == "PUT", p.count == 2, p[0] == "apps" {
             guard let b = decode(req.body, AddAppBody.self) else { return bad() }
             let ok = onMain { self.state?.serverUpdateApp(appID: p[1], name: b.name, teamID: b.team_id,
-                                                          githubRepo: b.github_repo, ipaURL: b.ipa_url) ?? false }
+                                                          githubRepo: b.github_repo, githubToken: b.github_token,
+                                                          ipaURL: b.ipa_url) ?? false }
             return ok ? json(["ok": true]) : notFound()
         }
         if m == "DELETE", p.count == 2, p[0] == "apps" {
@@ -170,7 +173,8 @@ extension SignState {
     func dtoApps() -> [AppDTO] {
         apps.map { AppDTO(id: $0.id.uuidString, name: $0.name, team_id: $0.teamID,
                           source: $0.sourcePath ?? $0.githubRepo ?? $0.ipaURL,
-                          github_repo: $0.githubRepo, ipa_url: $0.ipaURL) }
+                          github_repo: $0.githubRepo, ipa_url: $0.ipaURL,
+                          has_github_token: !($0.githubToken ?? "").isEmpty) }
     }
     func dtoRecords() -> [RecordDTO] {
         records.map {
@@ -184,18 +188,30 @@ extension SignState {
     func serverAddDevice(udid: String, name: String) {
         addDeviceFromConnected(SignDevice(udid: udid, name: name))
     }
-    func serverAddApp(name: String, teamID: String, githubRepo: String?, ipaURL: String?) -> Bool {
+    func serverAddApp(name: String, teamID: String, githubRepo: String?, githubToken: String?, ipaURL: String?) -> Bool {
         guard teams.contains(where: { $0.teamID == teamID }) else { return false }
-        addApp(SignApp(name: name, sourcePath: nil, githubRepo: githubRepo, ipaURL: ipaURL, teamID: teamID))
+        let token = (githubToken?.isEmpty ?? true) ? nil : githubToken
+        addApp(SignApp(name: name, sourcePath: nil, githubRepo: githubRepo,
+                       githubToken: token, ipaURL: ipaURL, teamID: teamID))
         return true
     }
-    func serverUpdateApp(appID: String, name: String, teamID: String, githubRepo: String?, ipaURL: String?) -> Bool {
+    func serverUpdateApp(appID: String, name: String, teamID: String,
+                         githubRepo: String?, githubToken: String?, ipaURL: String?) -> Bool {
         guard let existing = apps.first(where: { $0.id.uuidString == appID }),
               teams.contains(where: { $0.teamID == teamID }) else { return false }
         var app = existing
         app.name = name
         app.teamID = teamID
         app.githubRepo = githubRepo
+        // Token: app iOS không echo token cũ về. Quy ước:
+        //  - đổi nguồn khỏi github (repo rỗng) => xoá token
+        //  - gửi token mới (không rỗng)        => thay token
+        //  - để trống                          => giữ token cũ
+        if (githubRepo?.isEmpty ?? true) {
+            app.githubToken = nil
+        } else if let t = githubToken, !t.isEmpty {
+            app.githubToken = t
+        }
         app.ipaURL = ipaURL
         app.sourcePath = nil          // app iOS chỉ chỉnh github/url; bỏ path local cũ nếu có
         updateApp(app)

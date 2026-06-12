@@ -124,19 +124,21 @@ struct GitView: View {
     @State private var mergeTarget: MergeRequest?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.gap) {
             header
-            Divider()
-            HStack(alignment: .top, spacing: 16) {
+            HStack(alignment: .top, spacing: Theme.gap) {
                 repoList.frame(width: 280)
-                Divider()
                 mrList
             }
             if !viewModel.status.isEmpty {
-                Text(viewModel.status).font(.callout).foregroundStyle(.secondary)
+                Text(viewModel.status)
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textSecondary)
             }
         }
-        .padding(24)
+        .padding(Theme.pad)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Theme.bg)
         .fileImporter(isPresented: $showFolderPicker, allowedContentTypes: [.folder]) { result in
             if case .success(let url) = result {
                 viewModel.rootPath = url
@@ -148,9 +150,11 @@ struct GitView: View {
     }
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: Theme.gap) {
             HStack {
-                Text("Git Manager").font(.largeTitle.bold())
+                Text("Git Manager")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(Theme.textPrimary)
                 Spacer()
                 if viewModel.isBusy { ProgressView().controlSize(.small) }
                 Button("Chọn thư mục…") { showFolderPicker = true }
@@ -163,63 +167,100 @@ struct GitView: View {
                     get: { viewModel.autoScanEnabled },
                     set: { viewModel.toggleAutoScan($0) }
                 ))
+                .foregroundStyle(Theme.textSecondary)
                 Stepper("\(viewModel.autoScanIntervalMinutes) phút",
                         value: $viewModel.autoScanIntervalMinutes, in: 1...60)
                     .fixedSize()
                     .disabled(!viewModel.autoScanEnabled)
-                Text("(dùng ETag, tự động làm mới MR/PR)").font(.caption).foregroundStyle(.secondary)
+                    .foregroundStyle(Theme.textSecondary)
+                Text("(dùng ETag, tự động làm mới MR/PR)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
             }
+            .padding(.horizontal, Theme.pad)
+            .padding(.vertical, 8)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius))
+            .overlay(
+                RoundedRectangle(cornerRadius: Theme.radius)
+                    .strokeBorder(Theme.border, lineWidth: 1)
+            )
         }
     }
 
     private var repoList: some View {
-        VStack(alignment: .leading) {
-            Text("Repositories").font(.headline)
+        VStack(alignment: .leading, spacing: Theme.gap) {
+            Text("Repositories".uppercased())
+                .font(.system(size: 11, weight: .semibold))
+                .kerning(1)
+                .foregroundStyle(Theme.textTertiary)
             List(viewModel.repos, selection: $viewModel.selectedRepoID) { repo in
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: 3) {
                     HStack {
-                        Text(repo.name).font(.body.bold())
-                        if repo.isDirty { Image(systemName: "pencil.circle.fill").foregroundStyle(.orange) }
+                        Text(repo.name)
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(Theme.textPrimary)
+                        if repo.isDirty { Image(systemName: "pencil.circle.fill").foregroundStyle(Theme.orange) }
                     }
                     HStack(spacing: 8) {
-                        Label(repo.currentBranch, systemImage: "arrow.triangle.branch").font(.caption)
-                        if repo.ahead > 0 { Text("↑\(repo.ahead)").font(.caption) }
-                        if repo.behind > 0 { Text("↓\(repo.behind)").font(.caption) }
+                        Label(repo.currentBranch, systemImage: "arrow.triangle.branch")
+                            .font(.system(size: 11))
+                            .foregroundStyle(Theme.textSecondary)
+                        if repo.ahead > 0 {
+                            Text("↑\(repo.ahead)").font(Theme.mono(11)).foregroundStyle(Theme.green)
+                        }
+                        if repo.behind > 0 {
+                            Text("↓\(repo.behind)").font(Theme.mono(11)).foregroundStyle(Theme.orange)
+                        }
                     }
-                    .foregroundStyle(.secondary)
                     if let ref = repo.remoteRef {
-                        Text("\(ref.kind.rawValue) · \(ref.fullPath)").font(.caption2).foregroundStyle(.tertiary)
+                        Text("\(ref.kind.rawValue) · \(ref.fullPath)")
+                            .font(.system(size: 10))
+                            .foregroundStyle(Theme.textTertiary)
                     }
                 }
                 .tag(repo.id)
+                .listRowBackground(Color.clear)
                 .contentShape(Rectangle())
                 .onTapGesture { viewModel.select(repo) }
             }
+            .scrollContentBackground(.hidden)
+            .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius))
         }
     }
 
     private var mrList: some View {
-        VStack(alignment: .leading) {
-            Text(viewModel.selectedRepo.map { "MR/PR — \($0.name)" } ?? "MR/PR")
-                .font(.headline)
+        VStack(alignment: .leading, spacing: Theme.gap) {
+            Text((viewModel.selectedRepo.map { "MR/PR — \($0.name)" } ?? "MR/PR").uppercased())
+                .font(.system(size: 11, weight: .semibold))
+                .kerning(1)
+                .foregroundStyle(Theme.textTertiary)
             if viewModel.mergeRequests.isEmpty {
                 Text("Không có MR/PR đang mở (hoặc chưa tải).")
-                    .foregroundStyle(.secondary)
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Theme.textTertiary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 List(viewModel.mergeRequests) { mr in
                     HStack {
                         ciIcon(mr.ciStatus)
-                        VStack(alignment: .leading) {
-                            Text("#\(mr.id) \(mr.title)").font(.body.bold()).lineLimit(1)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("#\(mr.id) \(mr.title)")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(Theme.textPrimary)
+                                .lineLimit(1)
                             Text("\(mr.sourceBranch) → \(mr.targetBranch) · @\(mr.author)")
-                                .font(.caption).foregroundStyle(.secondary)
+                                .font(.system(size: 11))
+                                .foregroundStyle(Theme.textSecondary)
                         }
                         Spacer()
                         Button("Merge") { mergeTarget = mr }
                             .disabled(mr.mergeable == false)
                     }
+                    .listRowBackground(Color.clear)
                 }
+                .scrollContentBackground(.hidden)
+                .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius))
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -228,10 +269,10 @@ struct GitView: View {
     private func ciIcon(_ status: CIStatus) -> some View {
         let (name, color): (String, Color) = {
             switch status {
-            case .success: return ("checkmark.circle.fill", .green)
-            case .failed:  return ("xmark.circle.fill", .red)
-            case .pending: return ("clock.fill", .orange)
-            case .unknown: return ("questionmark.circle", .secondary)
+            case .success: return ("checkmark.circle.fill", Theme.green)
+            case .failed:  return ("xmark.circle.fill", Theme.red)
+            case .pending: return ("clock.fill", Theme.orange)
+            case .unknown: return ("questionmark.circle", Theme.textTertiary)
             }
         }()
         return Image(systemName: name).foregroundStyle(color)
@@ -239,15 +280,22 @@ struct GitView: View {
 
     private var tokensSheet: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Personal Access Token").font(.title2.bold())
+            Text("Personal Access Token")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
             Text("GitHub cần scope `repo`; GitLab cần scope `api`. Lưu an toàn trong Keychain.")
-                .font(.caption).foregroundStyle(.secondary)
-            VStack(alignment: .leading) {
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textTertiary)
+            VStack(alignment: .leading, spacing: 4) {
                 Text("GitHub PAT")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textSecondary)
                 SecureField("ghp_…", text: $viewModel.githubToken)
             }
-            VStack(alignment: .leading) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("GitLab PAT")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.textSecondary)
                 SecureField("glpat-…", text: $viewModel.gitlabToken)
             }
             HStack {
@@ -259,6 +307,7 @@ struct GitView: View {
         }
         .padding(24)
         .frame(width: 420)
+        .background(Theme.bg)
     }
 
     private func mergeSheet(_ mr: MergeRequest) -> some View {
@@ -285,18 +334,33 @@ private struct MergeSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Xác nhận Merge #\(mr.id)").font(.title2.bold())
-            Text(mr.title).font(.headline)
+            Text("Xác nhận Merge #\(mr.id)")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
+            Text(mr.title)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
 
-            Grid(alignment: .leading) {
-                GridRow { Text("Nhánh:").foregroundStyle(.secondary); Text("\(mr.sourceBranch) → \(mr.targetBranch)") }
-                GridRow { Text("Tác giả:").foregroundStyle(.secondary); Text("@\(mr.author)") }
-                GridRow { Text("CI:").foregroundStyle(.secondary); Text(mr.ciStatus.rawValue) }
+            Grid(alignment: .leading, verticalSpacing: 6) {
                 GridRow {
-                    Text("Có thể merge:").foregroundStyle(.secondary)
+                    Text("Nhánh:").foregroundStyle(Theme.textSecondary)
+                    Text("\(mr.sourceBranch) → \(mr.targetBranch)").foregroundStyle(Theme.textPrimary)
+                }
+                GridRow {
+                    Text("Tác giả:").foregroundStyle(Theme.textSecondary)
+                    Text("@\(mr.author)").foregroundStyle(Theme.textPrimary)
+                }
+                GridRow {
+                    Text("CI:").foregroundStyle(Theme.textSecondary)
+                    Text(mr.ciStatus.rawValue).foregroundStyle(Theme.textPrimary)
+                }
+                GridRow {
+                    Text("Có thể merge:").foregroundStyle(Theme.textSecondary)
                     Text(mr.mergeable == nil ? "?" : (mr.mergeable! ? "Có" : "Không/Conflict"))
+                        .foregroundStyle(mr.mergeable == false ? Theme.red : Theme.textPrimary)
                 }
             }
+            .font(.system(size: 12.5))
 
             Picker("Kiểu merge", selection: $method) {
                 ForEach(allowedMethods, id: \.self) { Text($0.rawValue.capitalized).tag($0) }
@@ -305,7 +369,7 @@ private struct MergeSheet: View {
 
             if mr.ciStatus != .success {
                 Label("CI chưa pass — cân nhắc trước khi merge.", systemImage: "exclamationmark.triangle")
-                    .font(.caption).foregroundStyle(.orange)
+                    .font(.system(size: 11)).foregroundStyle(Theme.orange)
             }
 
             HStack {
@@ -313,11 +377,12 @@ private struct MergeSheet: View {
                 Button("Hủy", action: onCancel)
                 Button("Merge \(method.rawValue)") { onMerge(method) }
                     .buttonStyle(.borderedProminent)
-                    .tint(.red)
+                    .tint(Theme.red)
             }
         }
         .padding(24)
         .frame(width: 460)
+        .background(Theme.bg)
         .onAppear {
             if !allowedMethods.contains(method) { method = allowedMethods.first ?? .merge }
         }

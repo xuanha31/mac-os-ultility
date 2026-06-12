@@ -11,12 +11,21 @@ struct DatabaseView: View {
     @State private var selectedRow: Int?
     /// Object đang xem source (để hiện nút Run… trên editor như SQL Developer).
     @State private var loadedObject: DBSchemaObject?
+    /// Ẩn/hiện panel Connections (sidebar trái).
+    @State private var showSidebar = true
 
     var body: some View {
-        HSplitView {
-            connectionsSidebar
-                .frame(minWidth: 240, maxWidth: 320)
+        // Dùng HStack (KHÔNG HSplitView): HSplitView/NSSplitView crash khi thêm/bớt
+        // pane động (ẩn/hiện Connections). mainPanel nằm ngoài `if` → giữ identity.
+        HStack(spacing: 0) {
+            if showSidebar {
+                connectionsSidebar
+                    .frame(width: 280)
+                    .frame(maxHeight: .infinity)
+                Divider().overlay(Theme.border)
+            }
             mainPanel
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -25,21 +34,29 @@ struct DatabaseView: View {
     private var connectionsSidebar: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Connections").font(.headline).padding(.leading, 12)
+                Text("Connections")
+                    .font(.system(size: 11, weight: .semibold)).kerning(1)
+                    .foregroundStyle(Theme.textTertiary)
+                    .padding(.leading, 12)
                 Spacer()
                 Button { openAddProfileWindow() } label: { Image(systemName: "plus") }
                     .buttonStyle(.borderless)
+                    .tint(Theme.accent)
                     .padding(.trailing, 10)
             }
             .padding(.vertical, 8)
-            Divider()
+            .background(Theme.surface)
+            Divider().overlay(Theme.border)
             List {
                 ForEach(state.profiles) { profile in
                     connectionNode(profile)
                 }
             }
             .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .background(Theme.surface)
         }
+        .background(Theme.surface)
     }
 
     private func connectionNode(_ p: ConnectionProfile) -> some View {
@@ -68,12 +85,12 @@ struct DatabaseView: View {
             Image(systemName: dbIcon(p.type)).foregroundStyle(dbColor(p.type))
             VStack(alignment: .leading, spacing: 1) {
                 Text(p.name.isEmpty ? "\(p.host):\(p.port)" : p.name)
-                    .font(.body.weight(.medium)).lineLimit(1)
+                    .font(.body.weight(.medium)).foregroundStyle(Theme.textPrimary).lineLimit(1)
                 Text("\(p.type.rawValue) · \(p.host):\(p.port)")
-                    .font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                    .font(.caption2).foregroundStyle(Theme.textTertiary).lineLimit(1)
             }
             Spacer()
-            Circle().fill(isConnected ? Color.green : Color.secondary.opacity(0.4))
+            Circle().fill(isConnected ? Theme.green : Theme.textTertiary.opacity(0.5))
                 .frame(width: 8, height: 8)
         }
         // #4: context menu của CONNECTION chỉ gắn ở node connection.
@@ -100,9 +117,9 @@ struct DatabaseView: View {
                 categoryFolder(cat)
             }
         } else if state.isBusy && state.selectedProfileID == p.id {
-            Label("Đang kết nối…", systemImage: "hourglass").font(.caption).foregroundStyle(.secondary)
+            Label("Đang kết nối…", systemImage: "hourglass").font(.caption).foregroundStyle(Theme.textSecondary)
         } else {
-            Text("Bung để kết nối").font(.caption).foregroundStyle(.tertiary)
+            Text("Bung để kết nối").font(.caption).foregroundStyle(Theme.textTertiary)
         }
     }
 
@@ -116,16 +133,16 @@ struct DatabaseView: View {
             }
         )) {
             if state.loadingCategories.contains(cat.id) {
-                Label("Đang tải…", systemImage: "hourglass").font(.caption).foregroundStyle(.secondary)
+                Label("Đang tải…", systemImage: "hourglass").font(.caption).foregroundStyle(Theme.textSecondary)
             } else if let objs = state.objectsByCategory[cat.id] {
                 if objs.isEmpty {
-                    Text("(trống)").font(.caption).foregroundStyle(.tertiary)
+                    Text("(trống)").font(.caption).foregroundStyle(Theme.textTertiary)
                 } else {
                     ForEach(objs) { obj in
                         HStack(spacing: 6) {
                             Image(systemName: schemaIcon(obj.type))
                                 .foregroundStyle(schemaColor(obj.type)).frame(width: 14)
-                            Text(obj.name).font(.callout).lineLimit(1)
+                            Text(obj.name).font(.callout).foregroundStyle(Theme.textPrimary).lineLimit(1)
                             Spacer()
                         }
                         .contentShape(Rectangle())
@@ -136,10 +153,10 @@ struct DatabaseView: View {
             }
         } label: {
             HStack(spacing: 6) {
-                Image(systemName: "folder.fill").foregroundStyle(schemaColor(cat.id))
-                Text(cat.title).font(.callout)
+                Image(systemName: "folder.fill").foregroundStyle(Theme.accent)
+                Text(cat.title).font(.callout).foregroundStyle(Theme.textPrimary)
                 if let n = state.objectsByCategory[cat.id]?.count {
-                    Text("(\(n))").font(.caption2).foregroundStyle(.tertiary)
+                    Text("(\(n))").font(.caption2).foregroundStyle(Theme.textTertiary)
                 }
             }
         }
@@ -150,7 +167,7 @@ struct DatabaseView: View {
     private var mainPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
             toolbar
-            Divider()
+            Divider().overlay(Theme.border)
             if state.isConnected {
                 editorAndResults
             } else {
@@ -158,16 +175,27 @@ struct DatabaseView: View {
             }
             statusBar
         }
+        .background(Theme.bg)
     }
 
     private var toolbar: some View {
         HStack(spacing: 8) {
-            Text("Database Client").font(.largeTitle.bold())
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { showSidebar.toggle() }
+            } label: {
+                Image(systemName: "sidebar.left")
+            }
+            .buttonStyle(.borderless)
+            .tint(Theme.accent)
+            .help(showSidebar ? "Ẩn Connections" : "Hiện Connections")
+            Text("Database Client")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundStyle(Theme.textPrimary)
             Spacer()
             if state.isBusy { ProgressView().controlSize(.small) }
             if state.isConnected {
                 HStack(spacing: 4) {
-                    Text("Số dòng:").font(.caption).foregroundStyle(.secondary)
+                    Text("Số dòng:").font(.caption).foregroundStyle(Theme.textSecondary)
                     Picker("", selection: $state.rowLimit) {
                         Text("100").tag(100)
                         Text("250").tag(250)
@@ -176,14 +204,16 @@ struct DatabaseView: View {
                         Text("5000").tag(5000)
                     }
                     .labelsHidden()
+                    .tint(Theme.accent)
                     .frame(width: 90)
                 }
                 Button("Ngắt kết nối") { state.disconnect() }
-                    .foregroundStyle(.red)
+                    .foregroundStyle(Theme.red)
             }
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 10)
+        .background(Theme.surface)
     }
 
     private var editorAndResults: some View {
@@ -199,23 +229,27 @@ struct DatabaseView: View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 2) {
                 ForEach(state.worksheets) { ws in
+                    let isActive = state.activeWorksheet == ws.id
                     HStack(spacing: 6) {
                         Image(systemName: "doc.text").font(.caption2)
+                            .foregroundStyle(isActive ? Theme.accent : Theme.textSecondary)
                         Text(ws.title).font(.callout)
+                            .foregroundStyle(isActive ? Theme.textPrimary : Theme.textSecondary)
                         if state.worksheets.count > 1 {
                             Button { state.closeWorksheet(ws.id) } label: {
                                 Image(systemName: "xmark").font(.system(size: 8))
+                                    .foregroundStyle(Theme.textTertiary)
                             }.buttonStyle(.borderless)
                         }
                     }
                     .padding(.horizontal, 10).padding(.vertical, 5)
-                    .background(state.activeWorksheet == ws.id ? Color.accentColor.opacity(0.18) : Color.clear,
+                    .background(isActive ? Theme.surface2 : Color.clear,
                                 in: RoundedRectangle(cornerRadius: 6))
                     .contentShape(Rectangle())
                     .onTapGesture { state.switchWorksheet(ws.id) }
                 }
                 Button { state.addWorksheet() } label: { Image(systemName: "plus") }
-                    .buttonStyle(.borderless).padding(.horizontal, 6)
+                    .buttonStyle(.borderless).tint(Theme.accent).padding(.horizontal, 6)
             }
             .padding(.horizontal, 12).padding(.top, 8)
         }
@@ -225,12 +259,14 @@ struct DatabaseView: View {
         VStack(alignment: .leading, spacing: 8) {
             worksheetTabs
             HStack {
-                Label("SQL Editor", systemImage: "pencil.and.list.clipboard").font(.headline)
+                Label("SQL Editor", systemImage: "pencil.and.list.clipboard")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Theme.textSecondary)
                 Spacer()
                 // Nút Run… cho object đang mở (package/proc/func) — mở dialog chọn/nhập tham số.
                 if let obj = loadedObject {
                     Button("▶ Run…") { runLoadedObject() }
-                        .buttonStyle(.borderedProminent).tint(.green)
+                        .buttonStyle(.borderedProminent).tint(Theme.green)
                         .help("Chọn/nhập tham số rồi chạy \(obj.name) (như Run PL/SQL của SQL Developer)")
                     Button("Compile") { state.execute() }
                         .help("Biên dịch lại source trong editor (CREATE OR REPLACE)")
@@ -238,6 +274,7 @@ struct DatabaseView: View {
                 }
                 Button("▶ Run Query  ⌘↵") { state.runQuery() }
                     .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
                     .keyboardShortcut(.return, modifiers: .command)
                     .help("Chạy SELECT, hiện kết quả dạng bảng (⌘ + Enter)")
                     .disabled(!state.isConnected || state.queryText.isEmpty)
@@ -249,40 +286,47 @@ struct DatabaseView: View {
             .padding(.horizontal, 12).padding(.top, 10)
 
             SQLTextEditor(text: $state.queryText)
-                .background(Color(nsColor: .textBackgroundColor),
-                            in: RoundedRectangle(cornerRadius: 8))
+                .background(Theme.bg,
+                            in: RoundedRectangle(cornerRadius: Theme.radius))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .strokeBorder(.quaternary, lineWidth: 1)
+                    RoundedRectangle(cornerRadius: Theme.radius)
+                        .strokeBorder(Theme.border, lineWidth: 1)
                 )
                 .padding(.horizontal, 12)
                 .padding(.bottom, 10)
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
+        .background(Theme.bg)
     }
 
     private var resultTable: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 10) {
-                Label("Kết quả", systemImage: "tablecells").font(.headline)
+                Label("Kết quả", systemImage: "tablecells")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(Theme.textSecondary)
                 if state.isEditable {
                     Button { openRowEditor(insert: true) } label: { Label("Thêm", systemImage: "plus") }
+                        .tint(Theme.accent)
                     Button { openRowEditor(insert: false) } label: { Label("Sửa", systemImage: "pencil") }
+                        .tint(Theme.accent)
                         .disabled(selectedRow == nil)
                     Button(role: .destructive) { deleteSelectedRow() } label: { Label("Xóa", systemImage: "trash") }
+                        .tint(Theme.red)
                         .disabled(selectedRow == nil)
                 }
                 Spacer()
                 if let r = state.queryResult {
                     Text("\(r.rows.count) dòng" + (r.rows.count >= state.rowLimit ? " (giới hạn \(state.rowLimit))" : ""))
-                        .font(.caption).foregroundStyle(.secondary)
+                        .font(Theme.mono(12, .regular)).foregroundStyle(Theme.textSecondary)
                 }
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
-            Divider()
+            .background(Theme.surface)
+            Divider().overlay(Theme.border)
             if let result = state.queryResult {
                 if result.rows.isEmpty {
-                    Text("Không có hàng nào.").foregroundStyle(.secondary).padding(12)
+                    Text("Không có hàng nào.").foregroundStyle(Theme.textSecondary).padding(12)
                     Spacer()
                 } else {
                     ResultTableView(result: result,
@@ -290,20 +334,23 @@ struct DatabaseView: View {
                                     selectedRow: $selectedRow)
                 }
             } else {
-                Text("Chưa chạy query.").foregroundStyle(.tertiary).padding(12)
+                Text("Chưa chạy query.").foregroundStyle(Theme.textTertiary).padding(12)
                 Spacer()
             }
         }
+        .background(Theme.bg)
     }
 
     private var emptyState: some View {
         VStack(spacing: 16) {
-            Image(systemName: "cylinder.split.1x2").font(.system(size: 48)).foregroundStyle(.secondary)
-            Text("Chọn connection ở sidebar để bắt đầu.").foregroundStyle(.secondary)
+            Image(systemName: "cylinder.split.1x2").font(.system(size: 48)).foregroundStyle(Theme.accent)
+            Text("Chọn connection ở sidebar để bắt đầu.").foregroundStyle(Theme.textSecondary)
             Button("Thêm connection mới") { openAddProfileWindow() }
                 .buttonStyle(.borderedProminent)
+                .tint(Theme.accent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.bg)
     }
 
     // MARK: - Window-based form (tránh sheet focus bug trên macOS)
@@ -335,13 +382,13 @@ struct DatabaseView: View {
     private var statusBar: some View {
         HStack {
             if !state.statusMessage.isEmpty {
-                Text(state.statusMessage).font(.callout).foregroundStyle(.secondary)
+                Text(state.statusMessage).font(.callout).foregroundStyle(Theme.textSecondary)
             }
             Spacer()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 4)
-        .background(.bar)
+        .background(Theme.surface)
     }
 
     // MARK: - #3: Row editor (thêm/sửa dòng)
@@ -602,38 +649,42 @@ struct ResultTableView: View {
             .frame(maxWidth: .infinity, alignment: .topLeading)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(Theme.bg)
     }
 
     private var headerRow: some View {
         HStack(spacing: 0) {
             ForEach(columns, id: \.self) { col in
                 Text(col)
-                    .font(.caption.bold())
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(Theme.textTertiary)
                     .lineLimit(1)
                     .padding(.horizontal, 8).padding(.vertical, 5)
                     .frame(width: colWidth, alignment: .leading)
-                    .background(Color(nsColor: .controlBackgroundColor))
-                    .overlay(Rectangle().frame(width: 1).foregroundStyle(.quaternary), alignment: .trailing)
+                    .background(Theme.surface)
+                    .overlay(Rectangle().frame(width: 1).foregroundStyle(Theme.border), alignment: .trailing)
             }
         }
-        .background(Color.accentColor.opacity(0.18))
+        .background(Theme.surface)
     }
 
     private func rowView(_ row: DBRow, index: Int) -> some View {
         let isSelected = selectedRow == index
         return HStack(spacing: 0) {
             ForEach(columns, id: \.self) { col in
-                Text(row[col].flatMap { $0 } ?? "NULL")
-                    .font(.system(.caption, design: .monospaced))
+                let value = row[col].flatMap { $0 }
+                Text(value ?? "NULL")
+                    .font(Theme.mono(11.5, .regular))
+                    .foregroundStyle(value == nil ? Theme.textTertiary : Theme.textPrimary)
                     .lineLimit(1)
                     .truncationMode(.tail)
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .frame(width: colWidth, alignment: .leading)
-                    .overlay(Rectangle().frame(width: 1).foregroundStyle(.quaternary.opacity(0.5)), alignment: .trailing)
+                    .overlay(Rectangle().frame(width: 1).foregroundStyle(Theme.border.opacity(0.6)), alignment: .trailing)
             }
         }
-        .background(isSelected ? Color.accentColor.opacity(0.30)
-                    : (index % 2 == 0 ? Color.clear : Color.secondary.opacity(0.06)))
+        .background(isSelected ? Theme.accent.opacity(0.25)
+                    : (index % 2 == 0 ? Color.clear : Theme.surface2.opacity(0.4)))
         .contentShape(Rectangle())
         .onTapGesture { selectedRow = (selectedRow == index) ? nil : index }
     }

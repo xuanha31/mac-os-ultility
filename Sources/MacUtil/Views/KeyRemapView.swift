@@ -98,105 +98,120 @@ struct KeyRemapView: View {
     @ObservedObject var viewModel: KeyRemapViewModel
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                Text("Đổi phím")
-                    .font(.largeTitle.bold())
+        ProScreen(title: "Đổi phím") {
+            Text("Đổi phím modifier qua hidutil (không cần quyền Accessibility). Hỗ trợ preset Command ↔ Shift và tạo remap tùy chỉnh.")
+                .font(.system(size: 12.5))
+                .foregroundStyle(Theme.textSecondary)
+                .fixedSize(horizontal: false, vertical: true)
 
-                Text("Đổi phím modifier qua hidutil (không cần quyền Accessibility). Hỗ trợ preset Command ↔ Shift và tạo remap tùy chỉnh.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+            presetSection
+            customSection
 
-                presetSection
-                customSection
-
-                if !viewModel.statusMessage.isEmpty {
-                    Label(viewModel.statusMessage, systemImage: viewModel.isError ? "exclamationmark.triangle" : "checkmark.circle")
-                        .foregroundStyle(viewModel.isError ? .red : .green)
-                }
-
-                Text("Lưu ý: đổi modifier có thể ảnh hưởng phím tắt hệ thống. Dùng nút Khôi phục nếu cần.")
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+            if !viewModel.statusMessage.isEmpty {
+                Label(viewModel.statusMessage, systemImage: viewModel.isError ? "exclamationmark.triangle" : "checkmark.circle")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(viewModel.isError ? Theme.red : Theme.green)
             }
-            .padding(24)
+
+            Text("Lưu ý: đổi modifier có thể ảnh hưởng phím tắt hệ thống. Dùng nút Khôi phục nếu cần.")
+                .font(.system(size: 11))
+                .foregroundStyle(Theme.textTertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
     private var presetSection: some View {
-        GroupBox("Preset nhanh") {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack {
-                    Button("Đổi Command ↔ Shift") { viewModel.swap() }
-                        .buttonStyle(.borderedProminent)
-                    Button("Khôi phục mặc định") { viewModel.reset() }
-                }
+        ProCard {
+            CardHeader(icon: "command", title: "preset nhanh")
 
-                Toggle("Giữ sau khi khởi động lại (LaunchAgent)",
-                       isOn: Binding(
-                        get: { viewModel.persistAcrossReboot },
-                        set: { viewModel.togglePersistence($0) }
-                       ))
+            HStack(spacing: Theme.gap) {
+                Button("Đổi Command ↔ Shift") { viewModel.swap() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+                Button("Khôi phục mặc định") { viewModel.reset() }
             }
-            .padding(8)
+
+            Toggle("Giữ sau khi khởi động lại (LaunchAgent)",
+                   isOn: Binding(
+                    get: { viewModel.persistAcrossReboot },
+                    set: { viewModel.togglePersistence($0) }
+                   ))
+                .font(.system(size: 12.5))
+                .foregroundStyle(Theme.textSecondary)
+                .tint(Theme.accent)
         }
     }
 
     private var customSection: some View {
-        GroupBox("Remap tùy chỉnh") {
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 12) {
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Từ phím").font(.caption).foregroundStyle(.secondary)
-                        Picker("", selection: $viewModel.newFrom) {
-                            ForEach(KeyRemapper.HIDKey.allCases) { key in
-                                Text(key.description).tag(key)
-                            }
+        ProCard {
+            CardHeader(icon: "keyboard", title: "remap tùy chỉnh")
+
+            HStack(spacing: Theme.gap) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Từ phím")
+                        .font(.system(size: 11, weight: .semibold)).kerning(1)
+                        .foregroundStyle(Theme.textTertiary)
+                    Picker("", selection: $viewModel.newFrom) {
+                        ForEach(KeyRemapper.HIDKey.allCases) { key in
+                            Text(key.description).tag(key)
                         }
-                        .frame(width: 180)
                     }
-
-                    Image(systemName: "arrow.right")
-                        .foregroundStyle(.secondary)
-                        .padding(.top, 18)
-
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("Sang phím").font(.caption).foregroundStyle(.secondary)
-                        Picker("", selection: $viewModel.newTo) {
-                            ForEach(KeyRemapper.HIDKey.allCases) { key in
-                                Text(key.description).tag(key)
-                            }
-                        }
-                        .frame(width: 180)
-                    }
-
-                    Button("Thêm") { viewModel.addMapping() }
-                        .buttonStyle(.borderedProminent)
-                        .padding(.top, 18)
+                    .labelsHidden()
+                    .tint(Theme.accent)
+                    .frame(width: 180)
                 }
 
-                if viewModel.customMappings.isEmpty {
-                    Text("Chưa có remap tùy chỉnh nào.")
-                        .font(.callout)
-                        .foregroundStyle(.tertiary)
-                } else {
-                    List {
-                        ForEach(Array(viewModel.customMappings.enumerated()), id: \.offset) { idx, pair in
-                            HStack {
-                                Text(pair.from.description)
-                                    .frame(width: 160, alignment: .leading)
-                                Image(systemName: "arrow.right").foregroundStyle(.secondary)
-                                Text(pair.to.description)
-                                    .frame(width: 160, alignment: .leading)
-                            }
+                Image(systemName: "arrow.right")
+                    .foregroundStyle(Theme.accent)
+                    .padding(.top, 18)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Sang phím")
+                        .font(.system(size: 11, weight: .semibold)).kerning(1)
+                        .foregroundStyle(Theme.textTertiary)
+                    Picker("", selection: $viewModel.newTo) {
+                        ForEach(KeyRemapper.HIDKey.allCases) { key in
+                            Text(key.description).tag(key)
                         }
-                        .onDelete { offsets in viewModel.removeMapping(at: offsets) }
                     }
-                    .frame(height: min(CGFloat(viewModel.customMappings.count) * 36 + 8, 200))
-                    .listStyle(.inset)
+                    .labelsHidden()
+                    .tint(Theme.accent)
+                    .frame(width: 180)
                 }
+
+                Button("Thêm") { viewModel.addMapping() }
+                    .buttonStyle(.borderedProminent)
+                    .tint(Theme.accent)
+                    .padding(.top, 18)
             }
-            .padding(8)
+
+            if viewModel.customMappings.isEmpty {
+                Text("Chưa có remap tùy chỉnh nào.")
+                    .font(.system(size: 12.5))
+                    .foregroundStyle(Theme.textTertiary)
+            } else {
+                List {
+                    ForEach(Array(viewModel.customMappings.enumerated()), id: \.offset) { idx, pair in
+                        HStack {
+                            Text(pair.from.description)
+                                .font(Theme.mono(12.5))
+                                .foregroundStyle(Theme.textPrimary)
+                                .frame(width: 160, alignment: .leading)
+                            Image(systemName: "arrow.right").foregroundStyle(Theme.textTertiary)
+                            Text(pair.to.description)
+                                .font(Theme.mono(12.5))
+                                .foregroundStyle(Theme.textPrimary)
+                                .frame(width: 160, alignment: .leading)
+                        }
+                        .listRowBackground(Theme.surface2)
+                    }
+                    .onDelete { offsets in viewModel.removeMapping(at: offsets) }
+                }
+                .frame(height: min(CGFloat(viewModel.customMappings.count) * 36 + 8, 200))
+                .listStyle(.inset)
+                .scrollContentBackground(.hidden)
+                .background(Theme.surface2, in: RoundedRectangle(cornerRadius: Theme.radius))
+            }
         }
     }
 }

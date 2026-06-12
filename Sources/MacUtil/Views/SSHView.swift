@@ -39,6 +39,8 @@ struct SSHView: View {
     @State private var execCommand = ""
     @State private var execResult = ""
     @State private var showExec = false
+    /// Ẩn/hiện panel danh sách SSH host (sidebar trái).
+    @State private var showSidebar = true
     /// Màu chữ terminal (hex RRGGBB) — lưu lại, dùng chung mọi session.
     @AppStorage("ssh.terminal.textColor") private var textColorHex = "ABB2BF"
 
@@ -49,9 +51,17 @@ struct SSHView: View {
     }
 
     var body: some View {
-        HSplitView {
-            sidebarPanel.frame(minWidth: 220, maxWidth: 280)
+        // Dùng HStack (KHÔNG HSplitView): HSplitView/NSSplitView crash khi thêm/bớt
+        // pane động. mainPanel nằm ngoài `if` → giữ identity, terminal không bị tạo lại.
+        HStack(spacing: 0) {
+            if showSidebar {
+                sidebarPanel
+                    .frame(width: 250)
+                    .frame(maxHeight: .infinity)
+                Divider().overlay(Theme.border)
+            }
             mainPanel
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
@@ -70,15 +80,20 @@ struct SSHView: View {
     private var sidebarPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("SSH Hosts").font(.headline).padding(.horizontal)
+                Text("SSH Hosts")
+                    .font(.system(size: 11, weight: .semibold)).kerning(1)
+                    .foregroundStyle(Theme.textTertiary)
+                    .padding(.horizontal)
                 Spacer()
                 Button { openAddProfileWindow() } label: { Image(systemName: "plus") }
-                    .buttonStyle(.borderless).padding(.trailing, 8)
+                    .buttonStyle(.borderless).tint(Theme.accent).padding(.trailing, 8)
             }
             .padding(.vertical, 8)
-            Divider()
+            .background(Theme.surface)
+            Divider().overlay(Theme.border)
             List(state.profiles) { profile in
                 profileRow(profile)
+                    .listRowBackground(Theme.bg)
                     .contextMenu {
                         Button("Mở terminal") { state.openSession(for: profile) }
                         Divider()
@@ -90,17 +105,22 @@ struct SSHView: View {
                     }
             }
             .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+            .background(Theme.bg)
         }
+        .background(Theme.bg)
     }
 
     private func profileRow(_ p: SSHProfile) -> some View {
         let sessionState = state.sessionStates[p.id] ?? .disconnected
         return HStack(spacing: 8) {
             Image(systemName: "terminal")
+                .foregroundStyle(Theme.textTertiary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(p.displayName).font(.body.bold()).lineLimit(1)
+                    .foregroundStyle(Theme.textPrimary)
                 Text("\(p.host):\(p.port) · \(p.authMethod.rawValue)")
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(Theme.mono(11, .regular)).foregroundStyle(Theme.textTertiary)
             }
             Spacer()
             stateIndicator(sessionState)
@@ -112,9 +132,9 @@ struct SSHView: View {
     private func stateIndicator(_ s: SSHSessionState) -> some View {
         let color: SwiftUI.Color = {
             switch s {
-            case .connected:                 return SwiftUI.Color.green
-            case .connecting, .reconnecting: return SwiftUI.Color.orange
-            case .disconnected:              return SwiftUI.Color.secondary
+            case .connected:                 return Theme.green
+            case .connecting, .reconnecting: return Theme.orange
+            case .disconnected:              return Theme.textTertiary
             }
         }()
         return Circle().fill(color).frame(width: 8, height: 8)
@@ -125,22 +145,32 @@ struct SSHView: View {
     private var mainPanel: some View {
         VStack(alignment: .leading, spacing: 0) {
             toolbar
-            Divider()
+            Divider().overlay(Theme.border)
             if let id = state.selectedSessionID, let session = state.sessions[id] {
                 sessionContent(session: session, id: id)
             } else {
                 emptyState
             }
             if !state.statusMessage.isEmpty {
-                Text(state.statusMessage).font(.callout).foregroundStyle(.secondary)
+                Text(state.statusMessage).font(.callout).foregroundStyle(Theme.textSecondary)
                     .padding(.horizontal, 12).padding(.vertical, 4)
             }
         }
+        .background(Theme.bg)
     }
 
     private var toolbar: some View {
         HStack(spacing: 8) {
-            Text("SSH Manager").font(.largeTitle.bold())
+            Button {
+                withAnimation(.easeInOut(duration: 0.18)) { showSidebar.toggle() }
+            } label: {
+                Image(systemName: "sidebar.left")
+            }
+            .buttonStyle(.borderless)
+            .help(showSidebar ? "Ẩn danh sách host" : "Hiện danh sách host")
+            Text("SSH Manager".uppercased())
+                .font(.system(size: 18, weight: .semibold)).kerning(0.5)
+                .foregroundStyle(Theme.textPrimary)
             Spacer()
             if state.isBusy { ProgressView().controlSize(.small) }
             if state.selectedSessionID != nil {
@@ -150,7 +180,9 @@ struct SSHView: View {
                 }
             }
         }
+        .tint(Theme.accent)
         .padding(.horizontal, 16).padding(.vertical, 10)
+        .background(Theme.surface)
     }
 
     // MARK: - Tab bar + terminal
@@ -166,16 +198,17 @@ struct SSHView: View {
                     }
                 }
             }
-            .background(.bar)
-            Divider()
+            .background(Theme.surface)
+            Divider().overlay(Theme.border)
             // Bố cục như MobaXterm: SFTP trái · Terminal+Monitor phải (Monitor dưới).
             HSplitView {
                 VStack(spacing: 0) {
                     Label("Files (SFTP)", systemImage: "folder")
-                        .font(.caption.bold()).foregroundStyle(.secondary)
+                        .font(.system(size: 11, weight: .semibold)).kerning(0.5)
+                        .foregroundStyle(Theme.textSecondary)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 10).padding(.vertical, 6).background(.bar)
-                    Divider()
+                        .padding(.horizontal, 10).padding(.vertical, 6).background(Theme.surface)
+                    Divider().overlay(Theme.border)
                     SFTPPanel(state: state, sessionID: id)
                 }
                 .frame(minWidth: 260, idealWidth: 320, maxWidth: 420)
@@ -184,16 +217,17 @@ struct SSHView: View {
                     VStack(spacing: 0) {
                         HStack(spacing: 6) {
                             Label("Terminal", systemImage: "terminal")
-                                .font(.caption.bold()).foregroundStyle(.secondary)
+                                .font(.system(size: 11, weight: .semibold)).kerning(0.5)
+                                .foregroundStyle(Theme.textSecondary)
                             Spacer()
-                            Text("Màu chữ").font(.caption2).foregroundStyle(.secondary)
+                            Text("Màu chữ").font(.caption2).foregroundStyle(Theme.textSecondary)
                             ColorPicker("", selection: textColorBinding, supportsOpacity: false)
                                 .labelsHidden()
                                 .help("Chọn màu chữ cho terminal SSH")
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 10).padding(.vertical, 6).background(.bar)
-                        Divider()
+                        .padding(.horizontal, 10).padding(.vertical, 6).background(Theme.surface)
+                        Divider().overlay(Theme.border)
                         TerminalSessionView(session: session,
                                             sessionState: state.sessionStates[id] ?? .connecting,
                                             textColorHex: textColorHex)
@@ -203,10 +237,11 @@ struct SSHView: View {
 
                     VStack(spacing: 0) {
                         Label("Monitor server", systemImage: "gauge.with.dots.needle.67percent")
-                            .font(.caption.bold()).foregroundStyle(.secondary)
+                            .font(.system(size: 11, weight: .semibold)).kerning(0.5)
+                            .foregroundStyle(Theme.textSecondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 10).padding(.vertical, 6).background(.bar)
-                        Divider()
+                            .padding(.horizontal, 10).padding(.vertical, 6).background(Theme.surface)
+                        Divider().overlay(Theme.border)
                         ServerMonitorPanel(state: state, sessionID: id)
                     }
                     .frame(minHeight: 160, idealHeight: 220)
@@ -219,23 +254,24 @@ struct SSHView: View {
         let isSelected = state.selectedSessionID == id
         return HStack(spacing: 6) {
             Circle()
-                .fill((state.sessionStates[id] ?? .disconnected) == .connected ? Color.green : .secondary)
+                .fill((state.sessionStates[id] ?? .disconnected) == .connected ? Theme.green : Theme.textTertiary)
                 .frame(width: 7, height: 7)
             Text(session.profile.displayName).font(.callout).lineLimit(1)
+                .foregroundStyle(isSelected ? Theme.textPrimary : Theme.textSecondary)
             Button { state.closeSession(id: id) } label: {
                 Image(systemName: "xmark").font(.caption2)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.borderless).tint(Theme.textTertiary)
         }
         .padding(.horizontal, 12).padding(.vertical, 6)
-        .background(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
+        .background(isSelected ? Theme.accent.opacity(0.15) : Color.clear)
         .contentShape(Rectangle())
         .onTapGesture { state.selectedSessionID = id }
     }
 
     private var execPanel: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Exec lệnh nhanh").font(.headline)
+            CardHeader(icon: "terminal", title: "exec lệnh nhanh")
             HStack {
                 TextField("Lệnh (vd: uptime)", text: $execCommand)
                     .textFieldStyle(.roundedBorder)
@@ -250,27 +286,41 @@ struct SSHView: View {
                 .buttonStyle(.borderedProminent)
                 Button("Đóng") { showExec = false; execResult = "" }
             }
+            .tint(Theme.accent)
             if !execResult.isEmpty {
                 ScrollView {
-                    Text(execResult).font(.system(.body, design: .monospaced))
+                    Text(execResult).font(Theme.mono(12.5, .regular))
+                        .foregroundStyle(Theme.textPrimary)
+                        .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
                 }
                 .frame(maxHeight: 200)
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
+                .background(Theme.bg, in: RoundedRectangle(cornerRadius: Theme.radius))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Theme.radius)
+                        .strokeBorder(Theme.border, lineWidth: 1)
+                )
             }
         }
-        .padding(16)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .padding(Theme.pad)
+        .background(Theme.surface, in: RoundedRectangle(cornerRadius: Theme.radius))
+        .overlay(
+            RoundedRectangle(cornerRadius: Theme.radius)
+                .strokeBorder(Theme.border, lineWidth: 1)
+        )
         .padding(12)
     }
 
     private var emptyState: some View {
         VStack(spacing: 16) {
-            Image(systemName: "terminal").font(.system(size: 48)).foregroundStyle(.secondary)
-            Text("Chọn host ở sidebar để mở terminal.").foregroundStyle(.secondary)
-            Button("Thêm SSH host") { openAddProfileWindow() }.buttonStyle(.borderedProminent)
+            Image(systemName: "terminal").font(.system(size: 48)).foregroundStyle(Theme.textTertiary)
+            Text("Chọn host ở sidebar để mở terminal.").foregroundStyle(Theme.textSecondary)
+            Button("Thêm SSH host") { openAddProfileWindow() }
+                .buttonStyle(.borderedProminent).tint(Theme.accent)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(Theme.bg)
     }
 }
 
@@ -508,7 +558,7 @@ struct SFTPPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
-                Text("Thư mục:").foregroundStyle(.secondary)
+                Text("Thư mục:").foregroundStyle(Theme.textSecondary)
                 TextField("đường dẫn (vd /home/user)", text: $path)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { refresh() }
@@ -516,15 +566,18 @@ struct SFTPPanel: View {
                 Button { uploadViaPanel() } label: { Label("Tải lên…", systemImage: "arrow.up.doc") }
                 if busy { ProgressView().controlSize(.small) }
             }
+            .tint(Theme.accent)
             .padding(8)
-            Divider()
+            .background(Theme.surface)
+            Divider().overlay(Theme.border)
             List(entries, id: \.self) { name in
                 HStack(spacing: 8) {
                     Image(systemName: name.hasSuffix("/") ? "folder.fill" : "doc")
-                        .foregroundStyle(name.hasSuffix("/") ? .blue : .secondary)
-                    Text(name)
+                        .foregroundStyle(name.hasSuffix("/") ? Theme.accent : Theme.textTertiary)
+                    Text(name).foregroundStyle(Theme.textPrimary)
                     Spacer()
                 }
+                .listRowBackground(Theme.bg)
                 .contentShape(Rectangle())
                 .contextMenu {
                     if !name.hasSuffix("/") {
@@ -532,16 +585,19 @@ struct SFTPPanel: View {
                     }
                 }
             }
+            .scrollContentBackground(.hidden)
+            .background(Theme.bg)
             .overlay {
                 if dropTargeted {
-                    RoundedRectangle(cornerRadius: 8).strokeBorder(.blue, lineWidth: 3)
-                        .overlay(Text("Thả để upload").font(.headline).foregroundStyle(.blue))
+                    RoundedRectangle(cornerRadius: Theme.radius).strokeBorder(Theme.accent, lineWidth: 3)
+                        .overlay(Text("Thả để upload").font(.headline).foregroundStyle(Theme.accent))
                 }
             }
             if !status.isEmpty {
-                Text(status).font(.caption).foregroundStyle(.secondary).padding(6)
+                Text(status).font(.caption).foregroundStyle(Theme.textSecondary).padding(6)
             }
         }
+        .background(Theme.bg)
         // Kéo-thả file từ Finder vào để upload.
         .onDrop(of: ["public.file-url"], isTargeted: $dropTargeted) { providers in
             handleDrop(providers); return true
@@ -621,33 +677,40 @@ struct ServerMonitorPanel: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
                 if let s = stats {
-                    if let cpu = s.cpuPercent { bar("CPU", value: cpu, text: String(format: "%.0f%%", cpu), color: .blue) }
+                    if let cpu = s.cpuPercent { bar("CPU", value: cpu, text: String(format: "%.0f%%", cpu), color: Theme.accent) }
                     if let used = s.memUsed, let total = s.memTotal, total > 0 {
                         bar("RAM", value: used / total * 100,
-                            text: "\(Int(used)) / \(Int(total)) MB", color: .green)
+                            text: "\(Int(used)) / \(Int(total)) MB", color: Theme.green)
                     }
-                    if let disk = s.diskPercent { bar("Disk /", value: disk, text: String(format: "%.0f%%", disk), color: .orange) }
+                    if let disk = s.diskPercent { bar("Disk /", value: disk, text: String(format: "%.0f%%", disk), color: Theme.orange) }
                     if !s.uptime.isEmpty {
-                        Text(s.uptime).font(.callout.monospaced()).foregroundStyle(.secondary)
+                        Text(s.uptime).font(Theme.mono(12.5, .regular)).foregroundStyle(Theme.textSecondary)
                     }
-                    Divider()
-                    Text("Raw output").font(.caption.bold()).foregroundStyle(.secondary)
-                    Text(s.raw).font(.system(.caption, design: .monospaced))
+                    Divider().overlay(Theme.border)
+                    Text("Raw output").font(.system(size: 11, weight: .semibold)).kerning(0.5)
+                        .foregroundStyle(Theme.textTertiary)
+                    Text(s.raw).font(Theme.mono(11, .regular))
+                        .foregroundStyle(Theme.textSecondary)
                         .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
                 } else {
-                    Text("Đang lấy thông tin server…").foregroundStyle(.secondary)
+                    Text("Đang lấy thông tin server…").foregroundStyle(Theme.textSecondary)
                 }
             }
             .padding(16)
         }
+        .background(Theme.bg)
         .onAppear { refresh(); start() }
         .onDisappear { timer?.invalidate() }
     }
 
     private func bar(_ label: String, value: Double, text: String, color: SwiftUI.Color) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack { Text(label).font(.headline); Spacer(); Text(text).monospacedDigit().foregroundStyle(color) }
-            ProgressView(value: max(0, min(100, value)), total: 100).tint(color)
+            HStack {
+                Text(label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(Theme.textSecondary)
+                Spacer()
+                Text(text).font(Theme.mono(12.5)).foregroundStyle(color)
+            }
+            StatBar(fraction: max(0, min(100, value)) / 100, color: color)
         }
     }
 
@@ -691,21 +754,21 @@ struct CommandConsoleView: View {
                     withAnimation { proxy.scrollTo("end", anchor: .bottom) }
                 }
             }
-            Divider()
+            Divider().overlay(Theme.border)
             HStack(spacing: 6) {
-                Text("\(cwd) $").font(.system(.caption, design: .monospaced)).foregroundStyle(.green)
+                Text("\(cwd) $").font(.system(.caption, design: .monospaced)).foregroundStyle(Theme.green)
                 TextField("nhập lệnh…", text: $command)
                     .textFieldStyle(.plain)
                     .font(.system(.caption, design: .monospaced))
                     .focused($focused)
                     .onSubmit { run() }
                 if running { ProgressView().controlSize(.mini) }
-                Button("Clear") { output = "" }.controlSize(.small)
+                Button("Clear") { output = "" }.controlSize(.small).tint(Theme.accent)
             }
             .padding(8)
-            .background(.bar)
+            .background(Theme.surface)
         }
-        .background(Color(nsColor: .textBackgroundColor))
+        .background(Theme.bg)
         .onAppear { focused = true }
     }
 

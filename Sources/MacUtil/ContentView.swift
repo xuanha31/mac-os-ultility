@@ -72,5 +72,7 @@ struct ContentView: View {
         .onReceive(NotificationCenter.default.publisher(for: .openClipboard)) { _ in
             selection = .clipboard
         }
+        // Design system "Pro tối giản (dark)" — xem Design/Theme.swift.
+        .preferredColorScheme(.dark)
     }
 }

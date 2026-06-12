@@ -39,6 +39,10 @@ public final class DatabaseState: ObservableObject {
     private var savedText: [UUID: String] = [:]
     private var savedResult: [UUID: DBResultSet?] = [:]
     private var savedEditable: [UUID: String?] = [:]
+    // Persist worksheet theo connection (profile.id) — xem WorksheetStore.
+    private let wsStore = WorksheetStore()
+    /// Profile mà bộ worksheet đang nằm trong RAM thuộc về (nil = chưa gắn, đang tạm).
+    private var loadedWorkspaceProfileID: UUID?
 
     private let store = ProfileStore()
     private var driver: (any DatabaseDriver)?
@@ -52,6 +56,13 @@ public final class DatabaseState: ObservableObject {
         worksheets = [first]
         activeWorksheet = first.id
         bindSleepWake()
+
+        // Auto-save: lưu script của tab sau ~1s ngừng gõ (debounce), giống Workbench.
+        $queryText
+            .dropFirst()
+            .debounce(for: .seconds(1), scheduler: DispatchQueue.main)
+            .sink { [weak self] _ in self?.persistCurrentWorkspace() }
+            .store(in: &cancellables)
     }
 
     public func addWorksheet() {
@@ -60,6 +71,7 @@ public final class DatabaseState: ObservableObject {
         worksheets.append(ws)
         activeWorksheet = ws.id
         queryText = ""; queryResult = nil; editableTable = nil
+        persistCurrentWorkspace()
     }
 
     public func switchWorksheet(_ id: UUID) {
@@ -69,6 +81,7 @@ public final class DatabaseState: ObservableObject {
         queryText = savedText[id] ?? ""
         queryResult = (savedResult[id] ?? nil)
         editableTable = (savedEditable[id] ?? nil)
+        persistCurrentWorkspace()   // cập nhật activeID đã lưu
     }
 
     public func closeWorksheet(_ id: UUID) {
@@ -80,6 +93,48 @@ public final class DatabaseState: ObservableObject {
             queryText = savedText[firstWS.id] ?? ""
             queryResult = (savedResult[firstWS.id] ?? nil)
             editableTable = (savedEditable[firstWS.id] ?? nil)
+        }
+        persistCurrentWorkspace()
+    }
+
+    // MARK: - Persist worksheet theo connection
+
+    /// Ghi bộ worksheet hiện tại xuống đĩa, gắn với profile đang nối.
+    private func persistCurrentWorkspace() {
+        guard let pid = loadedWorkspaceProfileID else { return }   // chưa gắn profile → bỏ qua
+        stashActive()
+        let items = worksheets.map {
+            WorksheetStore.Item(id: $0.id, title: $0.title, text: savedText[$0.id] ?? "")
+        }
+        wsStore.update(profileID: pid, workspace: .init(worksheets: items, activeID: activeWorksheet))
+    }
+
+    /// Nạp bộ worksheet đã lưu của một connection (gọi khi kết nối thành công).
+    private func loadWorkspace(for profileID: UUID) {
+        guard loadedWorkspaceProfileID != profileID else { return }   // đã đúng profile
+        persistCurrentWorkspace()   // lưu bộ của profile trước (no-op nếu chưa gắn)
+
+        if let saved = wsStore.workspace(for: profileID), !saved.worksheets.isEmpty {
+            worksheets = saved.worksheets.map { Worksheet(id: $0.id, title: $0.title) }
+            savedText = Dictionary(uniqueKeysWithValues: saved.worksheets.map { ($0.id, $0.text) })
+            savedResult = [:]; savedEditable = [:]
+            activeWorksheet = saved.worksheets.contains { $0.id == saved.activeID }
+                ? saved.activeID : worksheets[0].id
+            queryText = savedText[activeWorksheet] ?? ""
+            queryResult = nil; editableTable = nil
+            loadedWorkspaceProfileID = profileID
+        } else if loadedWorkspaceProfileID == nil {
+            // Lần đầu kết nối, profile chưa có workspace đã lưu → nhận luôn tab đang gõ dở.
+            loadedWorkspaceProfileID = profileID
+            persistCurrentWorkspace()
+        } else {
+            // Chuyển sang profile khác chưa có workspace → mở tab mới tinh.
+            let ws = Worksheet(id: UUID(), title: "SQL 1")
+            worksheets = [ws]; activeWorksheet = ws.id
+            savedText = [ws.id: ""]; savedResult = [:]; savedEditable = [:]
+            queryText = ""; queryResult = nil; editableTable = nil
+            loadedWorkspaceProfileID = profileID
+            persistCurrentWorkspace()
         }
     }
 
@@ -98,7 +153,11 @@ public final class DatabaseState: ObservableObject {
     }
 
     public func deleteProfile(at offsets: IndexSet) {
-        for idx in offsets { store.deletePassword(for: profiles[idx]) }
+        for idx in offsets {
+            store.deletePassword(for: profiles[idx])
+            wsStore.remove(profileID: profiles[idx].id)   // dọn worksheet đã lưu
+            if loadedWorkspaceProfileID == profiles[idx].id { loadedWorkspaceProfileID = nil }
+        }
         profiles = profiles.enumerated().filter { !offsets.contains($0.offset) }.map(\.element)
         store.saveProfiles(profiles)
     }
@@ -121,6 +180,7 @@ public final class DatabaseState: ObservableObject {
                 self.driver = drv
                 self.isConnected = true
                 self.selectedProfileID = profile.id
+                self.loadWorkspace(for: profile.id)   // khôi phục script/tab của connection này
                 self.statusMessage = "Đã kết nối \(profile.name)."
                 self.startKeepAlive()   // giữ session sống mỗi 5 phút
                 // Chỉ lấy danh sách folder cố định — KHÔNG query object (lazy khi bung).
@@ -135,6 +195,7 @@ public final class DatabaseState: ObservableObject {
 
     public func disconnect() {
         guard let drv = driver else { return }
+        persistCurrentWorkspace()   // chốt script trước khi ngắt
         stopKeepAlive()
         Task {
             await drv.disconnect()

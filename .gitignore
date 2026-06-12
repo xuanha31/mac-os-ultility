@@ -3,6 +3,9 @@
 .swiftpm/
 Package.resolved
 
+# Citadel fork đã patch (clone cục bộ, không vendor vào repo)
+Packages/
+
 # Xcode
 *.xcodeproj/xcuserdata/
 *.xcworkspace/xcuserdata/

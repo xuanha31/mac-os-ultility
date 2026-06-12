@@ -1,8 +1,36 @@
 import SwiftUI
+import AppKit
 import SSHModule
 import SwiftTerm
 import NIOCore
 import Citadel
+
+// MARK: - Hex màu (Color/NSColor ↔ "RRGGBB") cho ColorPicker terminal
+extension SwiftUI.Color {
+    init(hexRGB: String) {
+        let v = UInt64(hexRGB.trimmingCharacters(in: CharacterSet(charactersIn: "#")), radix: 16) ?? 0xABB2BF
+        self = SwiftUI.Color(.sRGB,
+                     red:   Double((v >> 16) & 0xFF) / 255,
+                     green: Double((v >> 8)  & 0xFF) / 255,
+                     blue:  Double(v         & 0xFF) / 255)
+    }
+    var hexRGB: String {
+        let ns = NSColor(self).usingColorSpace(.sRGB) ?? .white
+        return String(format: "%02X%02X%02X",
+                      Int((ns.redComponent   * 255).rounded()),
+                      Int((ns.greenComponent * 255).rounded()),
+                      Int((ns.blueComponent  * 255).rounded()))
+    }
+}
+
+extension NSColor {
+    convenience init(hexRGB: String) {
+        let v = UInt64(hexRGB.trimmingCharacters(in: CharacterSet(charactersIn: "#")), radix: 16) ?? 0xABB2BF
+        self.init(srgbRed: CGFloat((v >> 16) & 0xFF) / 255,
+                  green:   CGFloat((v >> 8)  & 0xFF) / 255,
+                  blue:    CGFloat(v         & 0xFF) / 255, alpha: 1)
+    }
+}
 
 // SSH-04/05: SSH Manager với terminal (SwiftTerm) + multi-tab sessions.
 
@@ -11,6 +39,14 @@ struct SSHView: View {
     @State private var execCommand = ""
     @State private var execResult = ""
     @State private var showExec = false
+    /// Màu chữ terminal (hex RRGGBB) — lưu lại, dùng chung mọi session.
+    @AppStorage("ssh.terminal.textColor") private var textColorHex = "ABB2BF"
+
+    /// Binding cho ColorPicker (Color ↔ hex lưu trong AppStorage).
+    private var textColorBinding: Binding<SwiftUI.Color> {
+        Binding(get: { SwiftUI.Color(hexRGB: textColorHex) },
+                set: { textColorHex = $0.hexRGB })
+    }
 
     var body: some View {
         HSplitView {
@@ -146,12 +182,22 @@ struct SSHView: View {
 
                 VSplitView {
                     VStack(spacing: 0) {
-                        Label("Terminal", systemImage: "terminal")
-                            .font(.caption.bold()).foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding(.horizontal, 10).padding(.vertical, 6).background(.bar)
+                        HStack(spacing: 6) {
+                            Label("Terminal", systemImage: "terminal")
+                                .font(.caption.bold()).foregroundStyle(.secondary)
+                            Spacer()
+                            Text("Màu chữ").font(.caption2).foregroundStyle(.secondary)
+                            ColorPicker("", selection: textColorBinding, supportsOpacity: false)
+                                .labelsHidden()
+                                .help("Chọn màu chữ cho terminal SSH")
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.horizontal, 10).padding(.vertical, 6).background(.bar)
                         Divider()
-                        CommandConsoleView(state: state, sessionID: id)
+                        TerminalSessionView(session: session,
+                                            sessionState: state.sessionStates[id] ?? .connecting,
+                                            textColorHex: textColorHex)
+                            .id(id)
                     }
                     .frame(minHeight: 200)
 
@@ -235,15 +281,42 @@ struct SSHView: View {
 struct TerminalSessionView: NSViewRepresentable {
     let session: SSHSession
     let sessionState: SSHSessionState
+    var textColorHex: String = "ABB2BF"
 
     func makeNSView(context: Context) -> TerminalView {
         let tv = TerminalView(frame: .zero)
         tv.terminalDelegate = context.coordinator
+        Self.applyDarkTheme(tv)
         context.coordinator.setup(tv: tv)
         return tv
     }
 
+    /// Theme tối (kiểu Termius/One Dark): nền tối + 16 màu ANSI + caret xanh.
+    static func applyDarkTheme(_ tv: TerminalView) {
+        func ansi(_ hex: UInt32) -> SwiftTerm.Color {
+            SwiftTerm.Color(red:   UInt16(hex >> 16 & 0xFF) * 257,
+                            green: UInt16(hex >> 8  & 0xFF) * 257,
+                            blue:  UInt16(hex       & 0xFF) * 257)
+        }
+        func ns(_ hex: UInt32) -> NSColor {
+            NSColor(srgbRed: CGFloat(hex >> 16 & 0xFF) / 255,
+                    green:   CGFloat(hex >> 8  & 0xFF) / 255,
+                    blue:    CGFloat(hex       & 0xFF) / 255, alpha: 1)
+        }
+        // 0-7 thường, 8-15 sáng (palette One Dark).
+        let palette: [UInt32] = [
+            0x282C34, 0xE06C75, 0x98C379, 0xE5C07B, 0x61AFEF, 0xC678DD, 0x56B6C2, 0xABB2BF,
+            0x5C6370, 0xE06C75, 0x98C379, 0xE5C07B, 0x61AFEF, 0xC678DD, 0x56B6C2, 0xFFFFFF,
+        ]
+        tv.installColors(palette.map(ansi))
+        tv.nativeBackgroundColor = ns(0x1D2026)
+        tv.nativeForegroundColor = ns(0xABB2BF)
+        tv.caretColor = ns(0x528BFF)
+    }
+
     func updateNSView(_ tv: TerminalView, context: Context) {
+        tv.nativeForegroundColor = NSColor(hexRGB: textColorHex)
+        tv.needsDisplay = true
         if sessionState == .connected && !context.coordinator.shellActive {
             context.coordinator.openShell(session: session, tv: tv)
         }
@@ -256,26 +329,19 @@ struct TerminalSessionView: NSViewRepresentable {
 final class TerminalCoordinator: NSObject {
     weak var terminalView: TerminalView?
     var shellActive = false
-    private var ttyWriter: (any Sendable)?  // TTYStdinWriter on macOS 15+
+    private var ttyWriter: TTYStdinWriter?
 
     func setup(tv: TerminalView) { terminalView = tv }
 
+    /// Mở shell PTY thật (chạy được trên macOS 14 nhờ Citadel patch nội bộ).
     func openShell(session: SSHSession, tv: TerminalView) {
         guard !shellActive else { return }
         shellActive = true
-        if #available(macOS 15.0, *) {
-            openShellMacOS15(session: session, tv: tv)
-        } else {
-            tv.feed(text: "\r\n[Interactive shell requires macOS 15+. Use 'Exec' button above.]\r\n")
-            shellActive = false
-        }
-    }
-
-    @available(macOS 15.0, *)
-    private func openShellMacOS15(session: SSHSession, tv: TerminalView) {
+        let term = tv.getTerminal()
+        let cols = term.cols, rows = term.rows
         Task {
             do {
-                try await session.openTTY { [weak self] inbound, outbound in
+                try await session.openTTY(cols: cols, rows: rows) { [weak self] inbound, outbound in
                     await MainActor.run { self?.ttyWriter = outbound }
                     for try await chunk in inbound {
                         let slice = ArraySlice(chunk)
@@ -283,7 +349,7 @@ final class TerminalCoordinator: NSObject {
                     }
                 }
             } catch {
-                await MainActor.run { tv.feed(text: "\r\n[Shell closed: \(error)]\r\n") }
+                await MainActor.run { tv.feed(text: "\r\n[Shell đóng: \(error)]\r\n") }
             }
             shellActive = false
         }
@@ -294,15 +360,18 @@ extension TerminalCoordinator: TerminalViewDelegate {
     nonisolated func send(source: TerminalView, data: ArraySlice<UInt8>) {
         let bytes = ByteBuffer(bytes: Array(data))
         Task { @MainActor [weak self] in
-            guard let writer = self?.ttyWriter else { return }
-            if #available(macOS 15.0, *), let w = writer as? TTYStdinWriter {
-                try? await w.write(bytes)
-            }
+            guard let w = self?.ttyWriter else { return }
+            try? await w.write(bytes)
         }
     }
     nonisolated func scrolled(source: TerminalView, position: Double) {}
     nonisolated func setTerminalTitle(source: TerminalView, title: String) {}
-    nonisolated func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {}
+    nonisolated func sizeChanged(source: TerminalView, newCols: Int, newRows: Int) {
+        Task { @MainActor [weak self] in
+            guard let w = self?.ttyWriter else { return }
+            try? await w.changeSize(cols: newCols, rows: newRows, pixelWidth: 0, pixelHeight: 0)
+        }
+    }
     nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
     nonisolated func requestOpenLink(source: TerminalView, link: String, params: [String: String]) {}
     nonisolated func bell(source: TerminalView) {}

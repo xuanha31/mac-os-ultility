@@ -114,23 +114,43 @@ public actor SSHSession {
 
     // MARK: - SSH-04: Interactive shell
 
-    /// Mở shell tương tác, trả về (inbound stream, outbound writer).
-    /// Yêu cầu macOS 15+ (Citadel withTTY). Trên macOS 14, dùng execStream thay thế.
-    @available(macOS 15.0, *)
+    /// Mở shell tương tác có cấp phát PTY THẬT (như Termius / ssh trong Terminal.app):
+    /// chạy được vi/top/htop, có màu, prompt thật, env/cd giữ nguyên.
+    ///
+    /// Trước đây bị chặn macOS 15 do Citadel gắn nhãn `@available(macOS 15)` lên
+    /// `withPTY`/`TTYOutput`. Nhãn đó không thực sự cần (chỉ bọc AsyncThrowingStream +
+    /// API NIOSSH có từ macOS 12) → đã gỡ trong bản Citadel patch nội bộ (Packages/Citadel).
     public func openTTY(
+        cols: Int = 120,
+        rows: Int = 32,
         perform: @escaping @Sendable (AsyncThrowingStream<Data, Error>, TTYStdinWriter) async throws -> Void
     ) async throws {
         guard let c = client, state == .connected else { throw SSHSessionError.notConnected }
-        try await c.withTTY { inbound, outbound in
+        let pty = SSHChannelRequestEvent.PseudoTerminalRequest(
+            wantReply: true,
+            term: "xterm-256color",
+            terminalCharacterWidth: cols,
+            terminalRowHeight: rows,
+            terminalPixelWidth: 0,
+            terminalPixelHeight: 0,
+            terminalModes: SSHTerminalModes([:])
+        )
+        try await c.withPTY(pty) { inbound, outbound in
             let dataStream = AsyncThrowingStream<Data, Error> { continuation in
                 Task {
-                    for try await output in inbound {
-                        if case .stdout(var buf) = output,
-                           let bytes = buf.readBytes(length: buf.readableBytes) {
-                            continuation.yield(Data(bytes))
+                    do {
+                        for try await output in inbound {
+                            switch output {
+                            case .stdout(var buf), .stderr(var buf):
+                                if let bytes = buf.readBytes(length: buf.readableBytes) {
+                                    continuation.yield(Data(bytes))
+                                }
+                            }
                         }
+                        continuation.finish()
+                    } catch {
+                        continuation.finish(throwing: error)
                     }
-                    continuation.finish()
                 }
             }
             try await perform(dataStream, outbound)

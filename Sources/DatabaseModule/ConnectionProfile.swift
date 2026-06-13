@@ -14,6 +14,17 @@ public enum DatabaseType: String, CaseIterable, Identifiable, Sendable, Codable 
     }
 }
 
+/// Chế độ SSL/TLS khi kết nối (hiện áp dụng cho MySQL).
+public enum SSLMode: String, CaseIterable, Identifiable, Sendable, Codable {
+    /// TLS bật nhưng KHÔNG xác thực chứng chỉ — hợp server self-signed (giống mysql CLI mặc định).
+    case preferred = "Tự động (không xác thực CA)"
+    /// Không dùng TLS — kết nối thường.
+    case disabled  = "Tắt SSL"
+    /// TLS + xác thực chứng chỉ đầy đủ (server phải có CA hợp lệ).
+    case verifyCA  = "Xác thực chứng chỉ (CA)"
+    public var id: String { rawValue }
+}
+
 /// Thông tin kết nối database (không chứa password — lưu Keychain riêng).
 public struct ConnectionProfile: Identifiable, Codable, Sendable, Equatable {
     public var id: UUID
@@ -23,6 +34,7 @@ public struct ConnectionProfile: Identifiable, Codable, Sendable, Equatable {
     public var port: Int
     public var username: String
     public var database: String  // schema name / service name (Oracle) / db index (Redis)
+    public var sslMode: SSLMode  // chế độ TLS (MySQL)
 
     public init(
         id: UUID = UUID(),
@@ -31,7 +43,8 @@ public struct ConnectionProfile: Identifiable, Codable, Sendable, Equatable {
         host: String = "localhost",
         port: Int? = nil,
         username: String = "",
-        database: String = ""
+        database: String = "",
+        sslMode: SSLMode = .preferred
     ) {
         self.id = id
         self.name = name
@@ -40,6 +53,24 @@ public struct ConnectionProfile: Identifiable, Codable, Sendable, Equatable {
         self.port = port ?? type.defaultPort
         self.username = username
         self.database = database
+        self.sslMode = sslMode
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, name, type, host, port, username, database, sslMode
+    }
+
+    // Decode tương thích ngược: profile lưu trước đây chưa có `sslMode` → mặc định .preferred.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        name = try c.decode(String.self, forKey: .name)
+        type = try c.decode(DatabaseType.self, forKey: .type)
+        host = try c.decode(String.self, forKey: .host)
+        port = try c.decode(Int.self, forKey: .port)
+        username = try c.decode(String.self, forKey: .username)
+        database = try c.decode(String.self, forKey: .database)
+        sslMode = try c.decodeIfPresent(SSLMode.self, forKey: .sslMode) ?? .preferred
     }
 
     /// Khóa Keychain để lưu password của profile này.

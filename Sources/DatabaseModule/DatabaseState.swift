@@ -162,6 +162,35 @@ public final class DatabaseState: ObservableObject {
         store.saveProfiles(profiles)
     }
 
+    /// Sửa thông tin một profile đã có (không phải xóa rồi tạo lại).
+    /// `password == nil` → giữ nguyên password cũ trong Keychain.
+    public func updateProfile(_ profile: ConnectionProfile, password: String?) {
+        guard let idx = profiles.firstIndex(where: { $0.id == profile.id }) else { return }
+        profiles[idx] = profile
+        store.saveProfiles(profiles)
+        if let password { try? store.setPassword(password, for: profile) }
+        // Đang nối chính profile vừa sửa → ngắt để thông tin mới có hiệu lực ở lần nối kế.
+        if selectedProfileID == profile.id && isConnected { disconnect() }
+    }
+
+    /// Password đã lưu của profile (dùng để prefill khi sửa).
+    public func password(for profile: ConnectionProfile) -> String? {
+        store.password(for: profile)
+    }
+
+    /// Thử kết nối với thông tin nhập vào — KHÔNG đụng tới connection đang mở.
+    /// Trả `.success` nếu connect được, `.failure(error)` kèm lý do nếu không.
+    public func testConnection(_ profile: ConnectionProfile, password: String) async -> Result<Void, Error> {
+        let drv = makeDriver(profile: profile, password: password)
+        do {
+            try await drv.connect()
+            await drv.disconnect()
+            return .success(())
+        } catch {
+            return .failure(error)
+        }
+    }
+
     public var selectedProfile: ConnectionProfile? {
         profiles.first { $0.id == selectedProfileID }
     }

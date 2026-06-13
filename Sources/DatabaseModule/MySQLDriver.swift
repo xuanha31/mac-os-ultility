@@ -30,12 +30,28 @@ public actor MySQLDriver: DatabaseDriver {
             username: profile.username,
             database: profile.database,
             password: password,
-            tlsConfiguration: .makeClientConfiguration(),
+            tlsConfiguration: tlsConfiguration(),
             on: eventLoopGroup.next()
         ).get()
         self.connection = conn
         self.isConnected = true
         Log.database.info("MySQL connected to \(self.profile.host, privacy: .public)")
+    }
+
+    /// TLS theo SSL mode của profile. `.disabled` → nil (không TLS);
+    /// `.preferred` → TLS nhưng bỏ qua xác thực chứng chỉ (hợp self-signed);
+    /// `.verifyCA` → TLS + xác thực CA đầy đủ.
+    private func tlsConfiguration() -> TLSConfiguration? {
+        switch profile.sslMode {
+        case .disabled:
+            return nil
+        case .preferred:
+            var config = TLSConfiguration.makeClientConfiguration()
+            config.certificateVerification = .none
+            return config
+        case .verifyCA:
+            return .makeClientConfiguration()
+        }
     }
 
     public func disconnect() async {

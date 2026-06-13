@@ -101,6 +101,7 @@ struct DatabaseView: View {
                 Button("Kết nối") { expanded.insert(p.id); state.connect(to: p) }
             }
             Divider()
+            Button("Sửa…") { openEditProfileWindow(for: p) }
             Button("Xóa", role: .destructive) {
                 if let idx = state.profiles.firstIndex(where: { $0.id == p.id }) {
                     state.deleteProfile(at: IndexSet(integer: idx))
@@ -357,11 +358,33 @@ struct DatabaseView: View {
 
     private func openAddProfileWindow() {
         let dbState = state
-        presentInWindow(title: "Thêm connection", width: 500, height: 440) { dismiss in
-            AddProfileSheet { profile, password in
-                dbState.addProfile(profile, password: password)
-                dismiss()
-            } onCancel: { dismiss() }
+        presentInWindow(title: "Thêm connection", width: 520, height: 520) { dismiss in
+            AddProfileSheet(
+                onTest: { p, pw in await dbState.testConnection(p, password: pw) },
+                onSave: { profile, password in
+                    dbState.addProfile(profile, password: password)
+                    dismiss()
+                },
+                onCancel: { dismiss() }
+            )
+        }
+    }
+
+    /// Sửa connection đã có — prefill thông tin + password, có nút kiểm tra kết nối.
+    private func openEditProfileWindow(for profile: ConnectionProfile) {
+        let dbState = state
+        let pwd = dbState.password(for: profile) ?? ""
+        presentInWindow(title: "Sửa connection", width: 520, height: 520) { dismiss in
+            AddProfileSheet(
+                editing: profile,
+                password: pwd,
+                onTest: { p, pw in await dbState.testConnection(p, password: pw) },
+                onSave: { p, pw in
+                    dbState.updateProfile(p, password: pw)
+                    dismiss()
+                },
+                onCancel: { dismiss() }
+            )
         }
     }
 
@@ -826,36 +849,108 @@ struct ProcRunSheet: View {
 // MARK: - Add Profile Sheet
 
 struct AddProfileSheet: View {
+    /// nil = thêm mới; có giá trị = đang sửa profile đó.
+    let editingID: UUID?
     let onSave: (ConnectionProfile, String) -> Void
     let onCancel: () -> Void
+    /// Thử kết nối với thông tin đang nhập (trả lỗi nếu thất bại). nil = ẩn nút test.
+    let onTest: ((ConnectionProfile, String) async -> Result<Void, Error>)?
 
-    @State private var profile = ConnectionProfile()
-    @State private var password = ""
-    @State private var portText = "3306"
+    @State private var profile: ConnectionProfile
+    @State private var password: String
+    @State private var portText: String
+    @State private var test: TestPhase = .idle
+
+    enum TestPhase: Equatable { case idle, running, ok, failed(String) }
+
+    init(
+        editing profile: ConnectionProfile? = nil,
+        password: String = "",
+        onTest: ((ConnectionProfile, String) async -> Result<Void, Error>)? = nil,
+        onSave: @escaping (ConnectionProfile, String) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        let initial = profile ?? ConnectionProfile()
+        self.editingID = profile?.id
+        _profile = State(initialValue: initial)
+        _password = State(initialValue: password)
+        _portText = State(initialValue: String(initial.port))
+        self.onTest = onTest
+        self.onSave = onSave
+        self.onCancel = onCancel
+    }
 
     // Focus management — cần thiết để sheet nhận keyboard input trên macOS
     private enum Field: Hashable { case name, host, port, database, username, password }
     @FocusState private var focus: Field?
 
+    private var isEditing: Bool { editingID != nil }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            Text("Thêm connection").font(.title2.bold())
+        VStack(alignment: .leading, spacing: 16) {
+            Text(isEditing ? "Sửa connection" : "Thêm connection").font(.title2.bold())
             fields
+            testRow
             Divider()
             HStack {
+                if let onTest {
+                    Button { runTest(onTest) } label: {
+                        Label("Kiểm tra kết nối", systemImage: "bolt.horizontal.circle")
+                    }
+                    .disabled(test == .running || profile.host.trimmingCharacters(in: .whitespaces).isEmpty)
+                    .help("Thử connect bằng thông tin trên form — không lưu, không ảnh hưởng connection đang mở")
+                }
                 Spacer()
                 Button("Hủy", action: onCancel)
-                Button("Lưu") { onSave(profile, password) }
+                Button(isEditing ? "Lưu thay đổi" : "Lưu") { onSave(profile, password) }
                     .buttonStyle(.borderedProminent)
                     .disabled(profile.host.trimmingCharacters(in: .whitespaces).isEmpty)
                     .keyboardShortcut(.return, modifiers: [])
             }
         }
         .padding(24)
-        .frame(width: 480)
+        .frame(width: 500)
         .onAppear {
             portText = String(profile.port)
             activateSheet { focus = .name }
+        }
+        // Sửa thông tin sau khi đã test → bỏ kết quả cũ (tránh hiểu nhầm còn đúng).
+        .onChange(of: profile) { _, _ in if test != .running { test = .idle } }
+        .onChange(of: password) { _, _ in if test != .running { test = .idle } }
+    }
+
+    /// Dòng trạng thái kết quả kiểm tra kết nối.
+    @ViewBuilder
+    private var testRow: some View {
+        switch test {
+        case .idle:
+            EmptyView()
+        case .running:
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Đang kiểm tra kết nối…").font(.callout).foregroundStyle(.secondary)
+            }
+        case .ok:
+            Label("Kết nối thành công!", systemImage: "checkmark.circle.fill")
+                .font(.callout).foregroundStyle(.green)
+        case .failed(let msg):
+            HStack(alignment: .top, spacing: 8) {
+                Image(systemName: "xmark.octagon.fill").foregroundStyle(.red)
+                Text(msg)
+                    .font(.caption).foregroundStyle(.red)
+                    .textSelection(.enabled).lineLimit(4)
+            }
+        }
+    }
+
+    private func runTest(_ onTest: @escaping (ConnectionProfile, String) async -> Result<Void, Error>) {
+        let p = profile, pw = password
+        test = .running
+        Task {
+            switch await onTest(p, pw) {
+            case .success:        test = .ok
+            case .failure(let e): test = .failed("\(e)")
+            }
         }
     }
 
@@ -918,6 +1013,15 @@ struct AddProfileSheet: View {
                 dbRow("Auth password") {
                     SecureField("(để trống nếu không có)", text: $password)
                         .focused($focus, equals: .password)
+                }
+            }
+            if profile.type == .mysql {
+                dbRow("SSL") {
+                    Picker("", selection: $profile.sslMode) {
+                        ForEach(SSLMode.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .labelsHidden()
+                    .pickerStyle(.menu)
                 }
             }
         }

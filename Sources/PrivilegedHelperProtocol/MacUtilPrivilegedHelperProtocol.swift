@@ -8,4 +8,7 @@ public enum MacUtilHelperConstants {
 @objc public protocol MacUtilPrivilegedHelperProtocol: NSObjectProtocol {
     func setHibernateMode(_ mode: Int32, withReply reply: @escaping (Bool, String) -> Void)
     func setMaxChargeLevel(_ percent: Int32, withReply reply: @escaping (Bool, String) -> Void)
+    /// Đặt một giá trị pmset (key/scope được whitelist phía helper).
+    /// Dùng cho tcpkeepalive, standbydelaylow… khi vào/ra hibernate.
+    func setPowerValue(_ key: String, value: Int32, scope: String, withReply reply: @escaping (Bool, String) -> Void)
 }

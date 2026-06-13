@@ -37,6 +37,12 @@ public struct PrivilegedHelperClient {
         }
     }
 
+    public func setPowerValue(_ key: String, value: Int, scope: String) throws {
+        try call { proxy, reply in
+            proxy.setPowerValue(key, value: Int32(value), scope: scope, withReply: reply)
+        }
+    }
+
     private func call(
         _ body: @escaping (MacUtilPrivilegedHelperProtocol, @escaping (Bool, String) -> Void) -> Void
     ) throws {

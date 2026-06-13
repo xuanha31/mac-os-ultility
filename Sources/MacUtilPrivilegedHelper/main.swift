@@ -39,6 +39,31 @@ final class PrivilegedHelper: NSObject, MacUtilPrivilegedHelperProtocol {
         }
     }
 
+    func setPowerValue(_ key: String, value: Int32, scope: String, withReply reply: @escaping (Bool, String) -> Void) {
+        // Whitelist để daemon root không chạy pmset key/scope tuỳ tiện.
+        let allowedKeys: Set<String> = [
+            "hibernatemode", "tcpkeepalive", "standby",
+            "standbydelaylow", "standbydelayhigh", "highstandbythreshold",
+            "powernap", "autopoweroff", "autopoweroffdelay", "womp",
+        ]
+        let allowedScopes: Set<String> = ["-a", "-b", "-c"]
+        guard allowedKeys.contains(key) else {
+            reply(false, "pmset key không hợp lệ: \(key)"); return
+        }
+        guard allowedScopes.contains(scope) else {
+            reply(false, "pmset scope không hợp lệ: \(scope)"); return
+        }
+        guard (0...604800).contains(value) else {
+            reply(false, "pmset value ngoài khoảng: \(value)"); return
+        }
+        do {
+            try run("/usr/bin/pmset", [scope, key, "\(value)"])
+            reply(true, "")
+        } catch {
+            reply(false, "\(error)")
+        }
+    }
+
     private func run(_ path: String, _ arguments: [String]) throws {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)

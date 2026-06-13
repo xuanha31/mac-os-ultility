@@ -23,6 +23,9 @@ public final class PowerState: ObservableObject {
     private var caffeinateProcess: Process?
     private var suspendedPIDs: [pid_t] = []
     private var previousHibernateMode: Int?
+    // Giá trị pmset (scope pin) trước khi hibernate, để khôi phục khi thức dậy.
+    private var previousTCPKeepAlive: Int?
+    private var previousStandbyDelayLow: Int?
     private var cancellables = Set<AnyCancellable>()
     private var distributedObservers: [NSObjectProtocol] = []
     private var workspaceObservers: [NSObjectProtocol] = []
@@ -172,6 +175,14 @@ public final class PowerState: ObservableObject {
             return
         }
 
+        // 2b. Giảm hao pin khi ngủ: tắt wake-for-network (tcpkeepalive=0) + rút ngắn
+        //     standby từ 3h → 10 phút. Chỉ đặt scope pin (-b); lưu giá trị cũ để khôi
+        //     phục khi thức dậy. Best-effort: lỗi cũng không chặn hibernate.
+        previousTCPKeepAlive   = controller.currentPowerValue("tcpkeepalive")   ?? 1
+        previousStandbyDelayLow = controller.currentPowerValue("standbydelaylow") ?? 10800
+        try? controller.setPowerValue("tcpkeepalive",   value: 0,   scope: "-b")
+        try? controller.setPowerValue("standbydelaylow", value: 600, scope: "-b")
+
         // 3. Tạm dừng mọi app người dùng (tự chạy lại khi wake).
         suspendedPIDs = controller.suspendAllApps()
 
@@ -194,6 +205,15 @@ public final class PowerState: ObservableObject {
         if let mode = previousHibernateMode {
             controller.restoreHibernateMode(mode)
             previousHibernateMode = nil
+        }
+        // Khôi phục tcpkeepalive + standbydelaylow về giá trị trước khi hibernate.
+        if let v = previousTCPKeepAlive {
+            controller.restorePowerValue("tcpkeepalive", value: v, scope: "-b")
+            previousTCPKeepAlive = nil
+        }
+        if let v = previousStandbyDelayLow {
+            controller.restorePowerValue("standbydelaylow", value: v, scope: "-b")
+            previousStandbyDelayLow = nil
         }
         // Sau khi user thức máy, màn hình chắc chắn đang SÁNG → reset cờ để không
         // hibernate lại cho tới khi màn hình tắt lần nữa (đề phòng thiếu screensDidWake).

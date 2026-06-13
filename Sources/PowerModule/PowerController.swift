@@ -25,13 +25,16 @@ public struct PowerController {
 
     // MARK: - Chống tự ngủ (caffeinate)
 
-    /// Khởi chạy `caffeinate -d -i -m -s` như tiến trình nền.
+    /// Khởi chạy `caffeinate -d -i -m -s -w <pid>` như tiến trình nền.
     /// - `-d` chặn ngủ màn hình, `-i` chặn ngủ idle, `-m` chặn ngủ đĩa, `-s` chặn ngủ hệ thống.
-    /// Giữ lại `Process` trả về; gọi `terminate()` để tắt chống ngủ.
+    /// - `-w <pid app>`: caffeinate TỰ THOÁT khi MacUtil chết (kể cả crash / force-kill),
+    ///   tránh để lại tiến trình caffeinate mồ côi giữ assertion chống ngủ → hao pin.
+    /// Giữ lại `Process` trả về; gọi `terminate()` để tắt chống ngủ chủ động.
     public func startCaffeinate() throws -> Process {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/caffeinate")
-        process.arguments = ["-d", "-i", "-m", "-s"]
+        process.arguments = ["-d", "-i", "-m", "-s",
+                             "-w", String(ProcessInfo.processInfo.processIdentifier)]
         try process.run()
         Log.core.info("caffeinate started (pid \(process.processIdentifier))")
         return process
@@ -111,6 +114,36 @@ public struct PowerController {
     /// Khôi phục hibernatemode về giá trị cũ. Prompt admin (best-effort).
     public func restoreHibernateMode(_ mode: Int) {
         _ = try? helper.setHibernateMode(mode)
+    }
+
+    // MARK: - pmset phụ trợ cho hibernate (tcpkeepalive, standbydelaylow…)
+
+    /// Đọc giá trị một setting từ `pmset -g custom`, ưu tiên block "Battery Power"
+    /// (batteryScope = true). Không cần admin. nil nếu không đọc được.
+    public func currentPowerValue(_ key: String, batteryScope: Bool = true) -> Int? {
+        guard let output = try? runPipe("/usr/bin/pmset", ["-g", "custom"]) else { return nil }
+        var inTarget = false
+        for rawLine in output.split(separator: "\n") {
+            let line = String(rawLine)
+            if line.contains("Battery Power") { inTarget = batteryScope; continue }
+            if line.contains("AC Power")      { inTarget = !batteryScope; continue }
+            guard inTarget else { continue }
+            let parts = line.split(whereSeparator: { $0 == " " || $0 == "\t" })
+            if parts.count >= 2, String(parts[0]) == key, let value = Int(parts[1]) {
+                return value
+            }
+        }
+        return nil
+    }
+
+    /// Đặt một giá trị pmset qua privileged helper (key/scope được whitelist phía helper).
+    public func setPowerValue(_ key: String, value: Int, scope: String = "-b") throws {
+        try helper.setPowerValue(key, value: value, scope: scope)
+    }
+
+    /// Khôi phục một giá trị pmset (best-effort, không ném lỗi).
+    public func restorePowerValue(_ key: String, value: Int, scope: String = "-b") {
+        _ = try? helper.setPowerValue(key, value: value, scope: scope)
     }
 
     // MARK: - Helpers

@@ -80,4 +80,13 @@ public protocol DatabaseDriver: AnyObject, Sendable {
 
     /// Health-check sau sleep/wake — reconnect nếu cần.
     func healthCheck() async
+
+    /// Cột PRIMARY KEY của một bảng — dùng để sửa trực tiếp grid (MySQL).
+    /// Rỗng nếu bảng không có PK hoặc backend không hỗ trợ (Oracle dùng ROWID, Redis không bảng).
+    func primaryKeyColumns(forTable table: String) async -> [String]
+}
+
+public extension DatabaseDriver {
+    /// Mặc định: không hỗ trợ (Oracle định danh dòng qua ROWID, Redis không phải bảng).
+    func primaryKeyColumns(forTable table: String) async -> [String] { [] }
 }

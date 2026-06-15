@@ -4,6 +4,9 @@ import AppKit
 /// Editor SQL dựa trên NSTextView: tắt smart-quotes, có số dòng, đồng bộ chắc chắn về binding.
 struct SQLTextEditor: NSViewRepresentable {
     @Binding var text: String
+    /// Báo vùng đang bôi đen + vị trí con trỏ (UTF-16) mỗi khi selection đổi.
+    /// Dùng để "Run Query" chỉ chạy câu được chọn / câu tại con trỏ.
+    var onSelectionChange: ((_ selected: String, _ caret: Int) -> Void)? = nil
 
     func makeNSView(context: Context) -> NSScrollView {
         let scrollView = NSScrollView()
@@ -82,7 +85,19 @@ struct SQLTextEditor: NSViewRepresentable {
         func textDidChange(_ notification: Notification) {
             guard let tv = notification.object as? NSTextView else { return }
             parent.text = tv.string      // đồng bộ về state.queryText
+            reportSelection(tv)
             ruler?.needsDisplay = true
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let tv = notification.object as? NSTextView else { return }
+            reportSelection(tv)
+        }
+
+        private func reportSelection(_ tv: NSTextView) {
+            let range = tv.selectedRange()
+            let selected = (range.length > 0) ? (tv.string as NSString).substring(with: range) : ""
+            parent.onSelectionChange?(selected, range.location)
         }
     }
 }

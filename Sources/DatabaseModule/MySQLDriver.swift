@@ -140,6 +140,23 @@ public actor MySQLDriver: DatabaseDriver {
         }
     }
 
+    /// Cột PRIMARY KEY của bảng (theo thứ tự) — để sửa trực tiếp grid.
+    public func primaryKeyColumns(forTable table: String) async -> [String] {
+        let clean = table.replacingOccurrences(of: "`", with: "")
+        let sql = """
+            SELECT COLUMN_NAME AS NAME FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+            WHERE TABLE_SCHEMA = '\(profile.database)' AND TABLE_NAME = '\(clean)'
+              AND CONSTRAINT_NAME = 'PRIMARY'
+            ORDER BY ORDINAL_POSITION
+            """
+        guard let conn = try? requireConnection(),
+              let rows = try? await conn.query(sql).get() else { return [] }
+        return rows.compactMap { row in
+            guard let name = (try? row.column("NAME")?.string) ?? nil, !name.isEmpty else { return nil }
+            return name
+        }
+    }
+
     private func requireConnection() throws -> MySQLConnection {
         guard let conn = connection, isConnected else { throw DBError.notConnected }
         return conn

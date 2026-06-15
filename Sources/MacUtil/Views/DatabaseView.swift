@@ -14,6 +14,11 @@ struct DatabaseView: View {
     /// Ẩn/hiện panel Connections (sidebar trái).
     @State private var showSidebar = true
 
+    /// Editor rỗng (bỏ khoảng trắng) → không cho Run/Execute.
+    private var sqlIsEmpty: Bool {
+        state.queryText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     var body: some View {
         // Dùng HStack (KHÔNG HSplitView): HSplitView/NSSplitView crash khi thêm/bớt
         // pane động (ẩn/hiện Connections). mainPanel nằm ngoài `if` → giữ identity.
@@ -208,6 +213,17 @@ struct DatabaseView: View {
                     .tint(Theme.accent)
                     .frame(width: 90)
                 }
+            }
+            // Hiện ngay cả khi mất kết nối (selectedProfile vẫn còn) để bấm nối lại thủ công.
+            if state.selectedProfile != nil {
+                Button { state.reconnect() } label: {
+                    Label("Kết nối lại", systemImage: "arrow.clockwise")
+                }
+                .tint(Theme.accent)
+                .disabled(state.isBusy)
+                .help("Đóng và mở lại kết nối hiện tại (dùng khi session bị treo hoặc server đã ngắt)")
+            }
+            if state.isConnected {
                 Button("Ngắt kết nối") { state.disconnect() }
                     .foregroundStyle(Theme.red)
             }
@@ -221,9 +237,104 @@ struct DatabaseView: View {
         VSplitView {
             sqlEditor
                 .frame(minHeight: 160, idealHeight: 240, maxHeight: .infinity)
-            resultTable
+            resultsRegion
                 .frame(minHeight: 160, maxHeight: .infinity)
         }
+    }
+
+    /// Khu kết quả: kết quả "live" + các bảng đã gim (song song hoặc theo tab).
+    @ViewBuilder
+    private var resultsRegion: some View {
+        if state.pinnedResults.isEmpty {
+            resultTable
+        } else if state.pinLayout == .tabs {
+            tabbedResults
+        } else {
+            sideBySideResults
+        }
+    }
+
+    /// Chế độ song song: kết quả live + các bảng gim cạnh nhau.
+    private var sideBySideResults: some View {
+        HStack(spacing: 0) {
+            resultTable
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            ForEach(state.pinnedResults) { pin in
+                Divider().overlay(Theme.border)
+                PinnedResultView(pin: pin,
+                                 onClose: { state.unpinResult(pin.id) },
+                                 onStatus: { state.statusMessage = $0 })
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+        }
+    }
+
+    /// Chế độ tab: thanh tab + nội dung tab đang chọn.
+    private var tabbedResults: some View {
+        VStack(spacing: 0) {
+            resultTabBar
+            Divider().overlay(Theme.border)
+            if let id = state.activeResultTab,
+               let pin = state.pinnedResults.first(where: { $0.id == id }) {
+                PinnedResultView(pin: pin,
+                                 onClose: { state.unpinResult(pin.id) },
+                                 onStatus: { state.statusMessage = $0 })
+            } else {
+                resultTable
+            }
+        }
+    }
+
+    private var resultTabBar: some View {
+        HStack(spacing: 6) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 2) {
+                    resultTabChip(title: "Kết quả", active: state.activeResultTab == nil,
+                                  closable: false, onTap: { state.activeResultTab = nil }, onClose: {})
+                    ForEach(state.pinnedResults) { pin in
+                        resultTabChip(title: pin.title, active: state.activeResultTab == pin.id,
+                                      closable: true,
+                                      onTap: { state.activeResultTab = pin.id },
+                                      onClose: { state.unpinResult(pin.id) })
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            pinLayoutToggle
+        }
+        .padding(.horizontal, 12).padding(.vertical, 6)
+        .background(Theme.surface)
+    }
+
+    private func resultTabChip(title: String, active: Bool, closable: Bool,
+                               onTap: @escaping () -> Void, onClose: @escaping () -> Void) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: closable ? "pin.fill" : "tablecells")
+                .font(.caption2).foregroundStyle(active ? Theme.accent : Theme.textTertiary)
+            Text(title).font(.callout).lineLimit(1).truncationMode(.middle)
+                .foregroundStyle(active ? Theme.textPrimary : Theme.textSecondary)
+                .frame(maxWidth: 170)
+            if closable {
+                Button { onClose() } label: { Image(systemName: "xmark").font(.system(size: 8)) }
+                    .buttonStyle(.borderless).tint(Theme.textTertiary)
+            }
+        }
+        .padding(.horizontal, 10).padding(.vertical, 5)
+        .background(active ? Theme.surface2 : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+        .contentShape(Rectangle())
+        .onTapGesture { onTap() }
+    }
+
+    /// Nút chuyển cách hiển thị bảng gim: Song song / Tab.
+    private var pinLayoutToggle: some View {
+        Picker("", selection: $state.pinLayout) {
+            Text("Song song").tag(DatabaseState.PinLayout.sideBySide)
+            Text("Tab").tag(DatabaseState.PinLayout.tabs)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 150)
+        .help("Cách hiển thị bảng gim: song song (cạnh nhau) hoặc theo tab")
     }
 
     private var worksheetTabs: some View {
@@ -278,15 +389,18 @@ struct DatabaseView: View {
                     .tint(Theme.accent)
                     .keyboardShortcut(.return, modifiers: .command)
                     .help("Chạy SELECT, hiện kết quả dạng bảng (⌘ + Enter)")
-                    .disabled(!state.isConnected || state.queryText.isEmpty)
+                    .disabled(!state.isConnected || state.isBusy || sqlIsEmpty)
                 Button("Execute  ⌘⏎") { state.execute() }
                     .keyboardShortcut(.return, modifiers: [.command, .shift])
                     .help("Compile source / chạy DDL-DML-PLSQL (⌘⇧ + Enter)")
-                    .disabled(!state.isConnected || state.queryText.isEmpty)
+                    .disabled(!state.isConnected || state.isBusy || sqlIsEmpty)
             }
             .padding(.horizontal, 12).padding(.top, 10)
 
-            SQLTextEditor(text: $state.queryText)
+            SQLTextEditor(text: $state.queryText, onSelectionChange: { sel, caret in
+                state.selectedText = sel
+                state.caretLocation = caret
+            })
                 .background(Theme.bg,
                             in: RoundedRectangle(cornerRadius: Theme.radius))
                 .overlay(
@@ -320,6 +434,13 @@ struct DatabaseView: View {
                 if let r = state.queryResult {
                     Text("\(r.rows.count) dòng" + (r.rows.count >= state.rowLimit ? " (giới hạn \(state.rowLimit))" : ""))
                         .font(Theme.mono(12, .regular)).foregroundStyle(Theme.textSecondary)
+                    Button { state.pinCurrentResult() } label: { Label("Gim", systemImage: "pin") }
+                        .tint(Theme.accent)
+                        .help("Gim kết quả này để so sánh với query chạy sau")
+                }
+                // Ở chế độ song song, nút chuyển layout nằm trong header này (chế độ tab nằm ở thanh tab).
+                if !state.pinnedResults.isEmpty && state.pinLayout == .sideBySide {
+                    pinLayoutToggle
                 }
             }
             .padding(.horizontal, 12).padding(.vertical, 8)
@@ -332,7 +453,8 @@ struct DatabaseView: View {
                 } else {
                     ResultTableView(result: result,
                                     columns: state.visibleColumns,
-                                    selectedRow: $selectedRow)
+                                    selectedRow: $selectedRow,
+                                    onStatus: { state.statusMessage = $0 })
                 }
             } else {
                 Text("Chưa chạy query.").foregroundStyle(Theme.textTertiary).padding(12)
@@ -417,18 +539,20 @@ struct DatabaseView: View {
     // MARK: - #3: Row editor (thêm/sửa dòng)
 
     private func deleteSelectedRow() {
-        guard let idx = selectedRow, let rows = state.queryResult?.rows, idx < rows.count,
-              let rowid = (rows[idx][SingleTableEdit.rowidColumn] ?? nil) else { return }
-        let rid = rowid
-        presentInWindow(title: "Xóa dòng", width: 320, height: 140) { dismiss in
+        guard let idx = selectedRow, let rows = state.queryResult?.rows, idx < rows.count else { return }
+        let row = rows[idx]
+        let keyDesc = state.rowKeyDescription(for: row)
+        presentInWindow(title: "Xóa dòng", width: 340, height: 150) { dismiss in
             VStack(alignment: .leading, spacing: 16) {
                 Label("Xóa dòng này khỏi \(state.editableTable ?? "")?", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.orange)
-                Text("ROWID: \(rid)").font(.caption.monospaced()).foregroundStyle(.secondary)
+                if !keyDesc.isEmpty {
+                    Text(keyDesc).font(.caption.monospaced()).foregroundStyle(.secondary).lineLimit(2)
+                }
                 HStack {
                     Spacer()
                     Button("Hủy") { dismiss() }
-                    Button("Xóa", role: .destructive) { state.deleteRow(rowid: rid); selectedRow = nil; dismiss() }
+                    Button("Xóa", role: .destructive) { state.deleteRow(originalRow: row); selectedRow = nil; dismiss() }
                         .buttonStyle(.borderedProminent).tint(.red)
                 }
             }.padding(20)
@@ -488,11 +612,11 @@ struct DatabaseView: View {
     private func openRowEditor(insert: Bool) {
         let cols = state.visibleColumns
         var initial: [String: String] = [:]
-        var rowid: String? = nil
+        var originalRow: DBRow? = nil
         if !insert, let idx = selectedRow, let rows = state.queryResult?.rows, idx < rows.count {
             let row = rows[idx]
             for c in cols { initial[c] = (row[c] ?? nil) ?? "" }
-            rowid = (row[SingleTableEdit.rowidColumn] ?? nil)
+            originalRow = row
         }
         let table = state.editableTable ?? ""
         presentInWindow(title: insert ? "Thêm dòng — \(table)" : "Sửa dòng — \(table)",
@@ -502,14 +626,14 @@ struct DatabaseView: View {
                     // Gửi tất cả cột (trống = NULL).
                     let v = Dictionary(uniqueKeysWithValues: cols.map { ($0, values[$0]?.isEmpty == false ? values[$0]! : nil) })
                     state.insertRow(values: v)
-                } else if let rid = rowid {
+                } else if let row = originalRow {
                     // Chỉ gửi cột đã thay đổi (tránh đụng cột ngày/timestamp).
                     var changed: [String: String?] = [:]
                     for c in cols where (values[c] ?? "") != (initial[c] ?? "") {
                         changed[c] = values[c]?.isEmpty == false ? values[c]! : nil
                     }
                     if changed.isEmpty { dismiss(); return }
-                    state.updateRow(rowid: rid, values: changed)
+                    state.updateRow(originalRow: row, values: changed)
                 }
                 dismiss()
             } onCancel: { dismiss() }
@@ -642,12 +766,58 @@ struct DatabaseView: View {
     }
 }
 
+// MARK: - Bảng kết quả đã gim (snapshot chỉ đọc, để so sánh)
+
+struct PinnedResultView: View {
+    let pin: DatabaseState.PinnedResult
+    let onClose: () -> Void
+    let onStatus: (String) -> Void
+    @State private var selectedRow: Int?
+
+    private var columns: [String] {
+        pin.result.columns.filter { $0 != SingleTableEdit.rowidColumn }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Image(systemName: "pin.fill").font(.caption).foregroundStyle(Theme.accent)
+                Text(pin.title)
+                    .font(Theme.mono(11.5, .regular)).foregroundStyle(Theme.textSecondary)
+                    .lineLimit(1).truncationMode(.middle)
+                    .help(pin.title)
+                Spacer()
+                Text("\(pin.result.rows.count) dòng")
+                    .font(Theme.mono(11, .regular)).foregroundStyle(Theme.textTertiary)
+                Button { onClose() } label: { Image(systemName: "xmark.circle.fill") }
+                    .buttonStyle(.borderless).tint(Theme.textTertiary)
+                    .help("Bỏ gim")
+            }
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .background(Theme.surface)
+            Divider().overlay(Theme.border)
+            if pin.result.rows.isEmpty {
+                Text("Không có hàng nào.").foregroundStyle(Theme.textSecondary).padding(12)
+                Spacer()
+            } else {
+                ResultTableView(result: pin.result, columns: columns,
+                                selectedRow: $selectedRow, onStatus: onStatus)
+            }
+        }
+        .background(Theme.bg)
+    }
+}
+
 // MARK: - Result table (cột thẳng hàng + lazy scroll, không phân trang)
 
 struct ResultTableView: View {
     let result: DBResultSet
     let columns: [String]           // cột hiển thị (đã ẩn ROWID)
     @Binding var selectedRow: Int?
+    /// Báo trạng thái ra ngoài (vd "Đã copy …").
+    var onStatus: (String) -> Void = { _ in }
+    /// Cột của ô đang chọn (kết hợp selectedRow để tô ô).
+    @State private var selectedCol: String?
     /// Số dòng đang hiển thị — tăng dần khi scroll tới cuối (infinite scroll).
     @State private var visibleCount = 200
     private let step = 200
@@ -695,21 +865,55 @@ struct ResultTableView: View {
         let isSelected = selectedRow == index
         return HStack(spacing: 0) {
             ForEach(columns, id: \.self) { col in
-                let value = row[col].flatMap { $0 }
-                Text(value ?? "NULL")
-                    .font(Theme.mono(11.5, .regular))
-                    .foregroundStyle(value == nil ? Theme.textTertiary : Theme.textPrimary)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .frame(width: colWidth, alignment: .leading)
-                    .overlay(Rectangle().frame(width: 1).foregroundStyle(Theme.border.opacity(0.6)), alignment: .trailing)
+                cellView(row[col].flatMap { $0 }, row: row, index: index, col: col)
             }
         }
-        .background(isSelected ? Theme.accent.opacity(0.25)
+        .background(isSelected ? Theme.accent.opacity(0.18)
                     : (index % 2 == 0 ? Color.clear : Theme.surface2.opacity(0.4)))
-        .contentShape(Rectangle())
-        .onTapGesture { selectedRow = (selectedRow == index) ? nil : index }
+    }
+
+    /// Một ô: click = chọn dòng + copy giá trị ô; chuột phải = menu copy.
+    private func cellView(_ value: String?, row: DBRow, index: Int, col: String) -> some View {
+        let isCellSelected = selectedRow == index && selectedCol == col
+        return Text(value ?? "NULL")
+            .font(Theme.mono(11.5, .regular))
+            .foregroundStyle(value == nil ? Theme.textTertiary : Theme.textPrimary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .padding(.horizontal, 8).padding(.vertical, 4)
+            .frame(width: colWidth, alignment: .leading)
+            .background(isCellSelected ? Theme.accent.opacity(0.45) : Color.clear)
+            .overlay(Rectangle().frame(width: 1).foregroundStyle(Theme.border.opacity(0.6)), alignment: .trailing)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                selectedRow = index
+                selectedCol = col
+                copyValue(value)
+            }
+            .contextMenu {
+                Button("Copy ô") { copyValue(value) }
+                Button("Copy cả dòng") { copyRow(row) }
+                Button("Copy tên cột") { copyToClipboard(col) }
+            }
+    }
+
+    /// Copy giá trị ô (NULL → chuỗi rỗng) + báo trạng thái.
+    private func copyValue(_ value: String?) {
+        let s = value ?? ""
+        copyToClipboard(s)
+        let preview = s.count > 40 ? String(s.prefix(40)) + "…" : s
+        onStatus(s.isEmpty ? "Đã copy (ô rỗng/NULL)." : "Đã copy: \(preview)")
+    }
+
+    private func copyRow(_ row: DBRow) {
+        let line = columns.map { (row[$0] ?? nil) ?? "" }.joined(separator: "\t")
+        copyToClipboard(line)
+        onStatus("Đã copy 1 dòng (\(columns.count) cột).")
+    }
+
+    private func copyToClipboard(_ s: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(s, forType: .string)
     }
 }
 

@@ -33,8 +33,13 @@ public actor MySQLDriver: DatabaseDriver {
             tlsConfiguration: tlsConfiguration(),
             on: eventLoopGroup.next()
         ).get()
-        self.connection = conn
-        self.isConnected = true
+        // Đóng connection đang giữ (nếu có) TRƯỚC khi thay — không bao giờ để nó bị deinit
+        // khi channel còn active: mysql-nio assert `!channel.isActive` trong deinit → SIGILL.
+        // Hay gặp khi reconnect sau sleep/wake hoặc 2 lần reconnect chồng nhau ở actor.
+        let previous = connection
+        connection = conn
+        isConnected = true
+        if let previous { try? await previous.close().get() }
         Log.database.info("MySQL connected to \(self.profile.host, privacy: .public)")
     }
 
@@ -55,9 +60,12 @@ public actor MySQLDriver: DatabaseDriver {
     }
 
     public func disconnect() async {
-        try? await connection?.close().get()
+        // Gỡ tham chiếu khỏi state TRƯỚC khi await close: nếu có task khác gán connection mới
+        // trong lúc đang đóng, ta chỉ đóng đúng connection của mình, không drop nhầm cái còn active.
+        let conn = connection
         connection = nil
         isConnected = false
+        try? await conn?.close().get()
     }
 
     public func query(_ sql: String) async throws -> DBResultSet {

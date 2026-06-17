@@ -1,8 +1,11 @@
 import SwiftUI
+import AppKit
 import KeyRemapModule
 
 @MainActor
 final class KeyRemapViewModel: ObservableObject {
+    enum CaptureTarget { case from, to }
+
     @Published var statusMessage = ""
     @Published var isError = false
     @Published var persistAcrossReboot = false
@@ -11,6 +14,10 @@ final class KeyRemapViewModel: ObservableObject {
     @Published var customMappings: [(from: KeyRemapper.HIDKey, to: KeyRemapper.HIDKey)] = []
     @Published var newFrom: KeyRemapper.HIDKey = .leftCommand
     @Published var newTo: KeyRemapper.HIDKey = .leftControl
+
+    /// Đang chờ người dùng bấm phím để chọn (nil = không bắt).
+    @Published var capturingTarget: CaptureTarget?
+    private var eventMonitor: Any?
 
     private let remapper = KeyRemapper()
     private let persistence = LoginPersistence()
@@ -71,7 +78,71 @@ final class KeyRemapViewModel: ObservableObject {
 
     func removeMapping(at offsets: IndexSet) {
         customMappings.remove(atOffsets: offsets)
-        applyCustom()
+        if customMappings.isEmpty {
+            // Không còn remap tùy chỉnh → xoá mapping đang áp dụng.
+            try? remapper.reset()
+            setStatus("Đã xoá remap tùy chỉnh.", error: false)
+        } else {
+            applyCustom()
+        }
+    }
+
+    // MARK: - Bắt phím khi bấm
+
+    /// Bật chế độ "bấm phím để chọn" cho ô Từ/Sang. Dùng NSEvent *local*
+    /// monitor — chỉ hoạt động khi cửa sổ app đang focus, KHÔNG cần quyền
+    /// Accessibility.
+    func startCapture(_ target: CaptureTarget) {
+        stopCapture()
+        capturingTarget = target
+        setStatus("Đang chờ… bấm phím bất kỳ trên bàn phím (Esc để huỷ).", error: false)
+        eventMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
+            // Local monitor luôn chạy trên main thread.
+            MainActor.assumeIsolated {
+                guard let self else { return event }
+                return self.handleCapture(event)
+            }
+        }
+    }
+
+    func stopCapture() {
+        if let monitor = eventMonitor {
+            NSEvent.removeMonitor(monitor)
+            eventMonitor = nil
+        }
+        capturingTarget = nil
+    }
+
+    /// Trả `nil` để nuốt sự kiện (không cho gõ ra ngoài) sau khi đã chọn.
+    private func handleCapture(_ event: NSEvent) -> NSEvent? {
+        guard let target = capturingTarget else { return event }
+
+        // Esc để huỷ (vẫn chọn được Esc qua danh sách nhóm "Điều khiển").
+        if event.type == .keyDown, event.keyCode == 0x35 {
+            stopCapture()
+            setStatus("Đã huỷ bắt phím.", error: false)
+            return nil
+        }
+
+        // flagsChanged: chỉ nhận lúc NHẤN (còn modifier đang bật), bỏ lúc nhả.
+        if event.type == .flagsChanged {
+            let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if flags.isEmpty { return nil }
+        }
+
+        if let key = KeyRemapper.HIDKey.from(virtualKeyCode: event.keyCode) {
+            switch target {
+            case .from: newFrom = key
+            case .to:   newTo = key
+            }
+            setStatus("Đã chọn phím: \(key.description)", error: false)
+            stopCapture()
+            return nil
+        }
+
+        setStatus("Không nhận dạng được phím vừa bấm (keyCode \(event.keyCode)). Hãy chọn trong danh sách.", error: true)
+        stopCapture()
+        return nil
     }
 
     private func applyCustom() {
@@ -99,7 +170,7 @@ struct KeyRemapView: View {
 
     var body: some View {
         ProScreen(title: "Đổi phím") {
-            Text("Đổi phím modifier qua hidutil (không cần quyền Accessibility). Hỗ trợ preset Command ↔ Shift và tạo remap tùy chỉnh.")
+            Text("Đổi phím qua hidutil (không cần quyền Accessibility). Hỗ trợ preset Command ↔ Shift và tạo remap tùy chỉnh cho mọi phím — kể cả phím Nhật (英数/かな/変換…).")
                 .font(.system(size: 12.5))
                 .foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -113,11 +184,12 @@ struct KeyRemapView: View {
                     .foregroundStyle(viewModel.isError ? Theme.red : Theme.green)
             }
 
-            Text("Lưu ý: đổi modifier có thể ảnh hưởng phím tắt hệ thống. Dùng nút Khôi phục nếu cần.")
+            Text("Lưu ý: đổi phím có thể ảnh hưởng phím tắt hệ thống. Dùng nút Khôi phục nếu cần.")
                 .font(.system(size: 11))
                 .foregroundStyle(Theme.textTertiary)
                 .fixedSize(horizontal: false, vertical: true)
         }
+        .onDisappear { viewModel.stopCapture() }
     }
 
     private var presetSection: some View {
@@ -146,43 +218,29 @@ struct KeyRemapView: View {
         ProCard {
             CardHeader(icon: "keyboard", title: "remap tùy chỉnh")
 
-            HStack(spacing: Theme.gap) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Từ phím")
-                        .font(.system(size: 11, weight: .semibold)).kerning(1)
-                        .foregroundStyle(Theme.textTertiary)
-                    Picker("", selection: $viewModel.newFrom) {
-                        ForEach(KeyRemapper.HIDKey.allCases) { key in
-                            Text(key.description).tag(key)
-                        }
-                    }
-                    .labelsHidden()
-                    .tint(Theme.accent)
-                    .frame(width: 180)
-                }
+            HStack(alignment: .bottom, spacing: Theme.gap) {
+                keyField(title: "Từ phím", selection: $viewModel.newFrom, target: .from)
 
                 Image(systemName: "arrow.right")
                     .foregroundStyle(Theme.accent)
-                    .padding(.top, 18)
+                    .padding(.bottom, 6)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Sang phím")
-                        .font(.system(size: 11, weight: .semibold)).kerning(1)
-                        .foregroundStyle(Theme.textTertiary)
-                    Picker("", selection: $viewModel.newTo) {
-                        ForEach(KeyRemapper.HIDKey.allCases) { key in
-                            Text(key.description).tag(key)
-                        }
-                    }
-                    .labelsHidden()
-                    .tint(Theme.accent)
-                    .frame(width: 180)
-                }
+                keyField(title: "Sang phím", selection: $viewModel.newTo, target: .to)
 
                 Button("Thêm") { viewModel.addMapping() }
                     .buttonStyle(.borderedProminent)
                     .tint(Theme.accent)
-                    .padding(.top, 18)
+            }
+
+            if viewModel.capturingTarget != nil {
+                Label("Đang chờ… bấm phím bất kỳ trên bàn phím (Esc để huỷ).", systemImage: "dot.radiowaves.left.and.right")
+                    .font(.system(size: 12))
+                    .foregroundStyle(Theme.accent)
+            } else {
+                Text("Mẹo: bấm nút ◉ rồi gõ phím trên bàn phím để chọn nhanh (kể cả phím Nhật), khỏi phải tìm trong danh sách.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Theme.textTertiary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             if viewModel.customMappings.isEmpty {
@@ -191,7 +249,7 @@ struct KeyRemapView: View {
                     .foregroundStyle(Theme.textTertiary)
             } else {
                 List {
-                    ForEach(Array(viewModel.customMappings.enumerated()), id: \.offset) { idx, pair in
+                    ForEach(Array(viewModel.customMappings.enumerated()), id: \.offset) { _, pair in
                         HStack {
                             Text(pair.from.description)
                                 .font(Theme.mono(12.5))
@@ -211,6 +269,44 @@ struct KeyRemapView: View {
                 .listStyle(.inset)
                 .scrollContentBackground(.hidden)
                 .background(Theme.surface2, in: RoundedRectangle(cornerRadius: Theme.radius))
+            }
+        }
+    }
+
+    /// Ô chọn 1 phím: Picker chia nhóm + nút bắt phím khi bấm.
+    private func keyField(title: String,
+                          selection: Binding<KeyRemapper.HIDKey>,
+                          target: KeyRemapViewModel.CaptureTarget) -> some View {
+        let capturing = viewModel.capturingTarget == target
+        return VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.system(size: 11, weight: .semibold)).kerning(1)
+                .foregroundStyle(Theme.textTertiary)
+
+            HStack(spacing: 6) {
+                Picker("", selection: selection) {
+                    ForEach(KeyRemapper.KeyCategory.allCases) { category in
+                        Section(header: Text(category.rawValue)) {
+                            ForEach(KeyRemapper.HIDKey.keys(in: category)) { key in
+                                Text(key.description).tag(key)
+                            }
+                        }
+                    }
+                }
+                .labelsHidden()
+                .tint(Theme.accent)
+                .frame(width: 180)
+
+                Button {
+                    if capturing { viewModel.stopCapture() }
+                    else { viewModel.startCapture(target) }
+                } label: {
+                    Image(systemName: capturing ? "record.circle.fill" : "record.circle")
+                        .font(.system(size: 16))
+                        .foregroundStyle(capturing ? Theme.red : Theme.accent)
+                }
+                .buttonStyle(.plain)
+                .help("Bấm rồi gõ phím trên bàn phím để chọn")
             }
         }
     }

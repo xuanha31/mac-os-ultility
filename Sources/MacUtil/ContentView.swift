@@ -7,6 +7,7 @@ enum Feature: String, CaseIterable, Identifiable {
     case keyRemap  = "Đổi phím"
     case database  = "Database"
     case ssh       = "SSH"
+    case remote    = "Remote (VNC/RDP)"
     case git       = "Git"
     case sign      = "Sign (iOS)"
     case fan       = "Quạt"
@@ -22,6 +23,7 @@ enum Feature: String, CaseIterable, Identifiable {
         case .keyRemap:  return "keyboard"
         case .database:  return "cylinder.split.1x2"
         case .ssh:       return "terminal"
+        case .remote:    return "display"
         case .git:       return "arrow.triangle.branch"
         case .sign:      return "signature"
         case .fan:       return "fanblades"
@@ -42,7 +44,7 @@ struct ContentView: View {
                     .tag(Feature.monitor)
 
                 Section("Công cụ") {
-                    ForEach([Feature.database, .ssh, .git, .sign]) { f in
+                    ForEach([Feature.database, .ssh, .remote, .git, .sign]) { f in
                         Label(f.rawValue, systemImage: f.systemImage).tag(f)
                     }
                 }
@@ -62,6 +64,7 @@ struct ContentView: View {
             case .keyRemap:  KeyRemapView(viewModel: appState.keyRemap)
             case .database:  DatabaseView(state: appState.database)
             case .ssh:       SSHView(state: appState.ssh)
+            case .remote:    RemoteDesktopView(state: appState.remote)
             case .git:       GitView(viewModel: appState.git)
             case .sign:      SignView(state: appState.sign)
             case .fan:       FanView(state: appState.fan)

@@ -1,0 +1,48 @@
+diff --git a/Sources/RoyalVNCKit/Extensions/Queue.swift b/Sources/RoyalVNCKit/Extensions/Queue.swift
+index d492c29..dc31988 100644
+--- a/Sources/RoyalVNCKit/Extensions/Queue.swift
++++ b/Sources/RoyalVNCKit/Extensions/Queue.swift
+@@ -6,28 +6,32 @@ import Foundation
+ 
+ struct Queue<T> {
+ 	private var list = [T]()
+-	
++	private let lock = NSLock()
++
+ 	mutating func enqueue(_ element: T) {
++		lock.lock(); defer { lock.unlock() }
+ 		list.append(element)
+ 	}
+-	
++
+ 	mutating func dequeue() -> T? {
+-		guard !isEmpty else { return nil }
+-		
++		lock.lock(); defer { lock.unlock() }
++		guard !list.isEmpty else { return nil }
++
+ 		return list.removeFirst()
+ 	}
+-	
++
+ 	mutating func clear() {
++		lock.lock(); defer { lock.unlock() }
+ 		list.removeAll()
+ 	}
+-	
++
+ 	func peek() -> T? {
+-		guard !isEmpty else { return nil }
+-		
+-		return list[0]
++		lock.lock(); defer { lock.unlock() }
++		return list.first
+ 	}
+-	
++
+ 	var isEmpty: Bool {
+-		list.isEmpty
++		lock.lock(); defer { lock.unlock() }
++		return list.isEmpty
+ 	}
+ }

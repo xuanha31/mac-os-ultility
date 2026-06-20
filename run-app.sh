@@ -21,6 +21,14 @@ mkdir -p "${APP_DIR}/Contents/Resources"
 
 cp "${BIN_PATH}" "${APP_DIR}/Contents/MacOS/${APP_NAME}"
 
+# Dynamic libs do SwiftPM build ra (vd libRoyalVNCKit.dylib của tính năng VNC) có
+# install name @rpath/... Binary tìm chúng qua rpath @loader_path = Contents/MacOS,
+# nên phải copy cạnh executable — không thì dyld lỗi "Library not loaded" lúc launch.
+# (FreeRDP/winpr link theo path tuyệt đối /usr/local nên nạp được, không cần copy.)
+for dylib in ".build/${CONFIG}"/*.dylib; do
+    [ -f "${dylib}" ] && cp "${dylib}" "${APP_DIR}/Contents/MacOS/"
+done
+
 # Helper cũ ghi BCLM bằng osascript, giữ lại để tiện debug thủ công.
 HELPER_PATH=".build/${CONFIG}/BatteryHelper"
 if [ -f "${HELPER_PATH}" ]; then

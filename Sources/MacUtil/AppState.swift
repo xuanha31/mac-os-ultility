@@ -5,6 +5,7 @@ import Core
 import MonitorModule
 import DatabaseModule
 import SSHModule
+import RemoteDesktopModule
 import FanControlModule
 import ClipboardModule
 import PowerModule
@@ -18,6 +19,7 @@ final class AppState: ObservableObject {
     let monitor = SystemMonitor()
     let database: DatabaseState
     let ssh: SSHState
+    let remote = RemoteState()
     let fan = FanState()
     let clipboard = ClipboardState()
     let power: PowerState

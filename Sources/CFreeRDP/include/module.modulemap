@@ -1,0 +1,4 @@
+module CFreeRDP {
+    header "cfreerdp_shim.h"
+    export *
+}

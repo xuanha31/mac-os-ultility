@@ -54,7 +54,7 @@ struct PowerView: View {
                 .labelsHidden()
                 .tint(Theme.accent)
             }
-            Text("Khi macOS khoá phiên làm việc, app tự đổi sang hibernatemode 25 rồi đưa máy vào hibernate. Lần đầu cần cho phép privileged helper; các lần sau không cần nhập mật khẩu.")
+            Text("Khi khoá màn hình, app ép máy ngủ ngay → hibernate (ghi RAM ra đĩa rồi cắt nguồn); gập máy cũng hibernate nhờ hibernatemode 25 bền vững. Tắt toggle sẽ khôi phục cấu hình cũ. Đánh đổi: thức dậy chậm hơn và ghi đĩa nhiều hơn mỗi lần ngủ. Lần đầu cần cho phép privileged helper.")
                 .font(.system(size: 12.5))
                 .foregroundStyle(Theme.textSecondary)
                 .fixedSize(horizontal: false, vertical: true)

@@ -1,18 +1,21 @@
 import Foundation
 import Combine
 import Core
-#if canImport(AppKit)
-import AppKit
-#endif
 
 /// State chia sẻ cho tính năng nguồn (menu bar).
 /// - Chống tự ngủ: bật/tắt `caffeinate -d -i -m -s`.
-/// - Hibernate khi khoá: CHỈ kích hoạt khi MÀN HÌNH ĐÃ TẮT *và* ĐANG KHOÁ.
-///   Lưu hibernatemode cũ → đặt 25 → tạm dừng app → ngủ; khi máy thức dậy thì
-///   chạy lại app + khôi phục hibernatemode (qua SleepWakeCoordinator).
+/// - Hibernate khi khoá/ngủ: đặt `hibernatemode 25` BỀN VỮNG khi bật toggle, để CHÍNH
+///   macOS hibernate (ghi RAM ra đĩa rồi cắt nguồn) ở MỌI lần ngủ — kể cả khi gập máy.
+///   Khôi phục cấu hình cũ khi tắt toggle. Không phụ thuộc notification khoá màn hình
+///   (cách cũ phản ứng theo lock+display-sleep đua với OS sleep → gập máy không kịp đổi
+///   hibernatemode, máy chỉ vào sleep thường với RAM còn cấp điện).
 @MainActor
 public final class PowerState: ObservableObject {
-    private static let hibernateOnLockKey = "PowerState.hibernateOnLockEnabled"
+    private static let hibernateOnLockKey   = "PowerState.hibernateOnLockEnabled"
+    // Lưu giá trị cũ để khôi phục khi tắt toggle. Dùng UserDefaults để sống sót qua
+    // khởi động lại (pmset -a cũng bền vững qua reboot).
+    private static let savedHibernateModeKey = "PowerState.savedHibernateMode"
+    private static let savedTCPKeepAliveKey  = "PowerState.savedTCPKeepAlive"
 
     @Published public private(set) var isPreventingSleep = false
     @Published public private(set) var isHibernating = false
@@ -22,23 +25,18 @@ public final class PowerState: ObservableObject {
     private let controller = PowerController()
     private var caffeinateProcess: Process?
     private var suspendedPIDs: [pid_t] = []
-    private var previousHibernateMode: Int?
-    // Giá trị pmset (scope pin) trước khi hibernate, để khôi phục khi thức dậy.
-    private var previousTCPKeepAlive: Int?
-    private var previousStandbyDelayLow: Int?
+    // hibernatemode cần khôi phục khi thức dậy, CHỈ cho nút "Vào hibernate" lúc toggle TẮT
+    // (đặt 25 tạm thời rồi trả lại). Khi toggle BẬT thì 25 là bền vững → không đụng tới.
+    private var oneShotPreviousMode: Int?
     private var cancellables = Set<AnyCancellable>()
     private var distributedObservers: [NSObjectProtocol] = []
-    private var workspaceObservers: [NSObjectProtocol] = []
-
-    // Điều kiện hibernate = màn hình ĐÃ TẮT và ĐANG KHOÁ. Theo dõi độc lập 2 cờ
-    // vì thứ tự "khoá" và "tắt màn hình" không cố định (tuỳ cấu hình máy).
-    private var isScreenLocked = false
-    private var isDisplayAsleep = false
 
     public init(sleepWake: SleepWakeCoordinator) {
         isHibernateOnLockEnabled = UserDefaults.standard.bool(forKey: Self.hibernateOnLockKey)
 
-        // Khi máy thức dậy: chạy lại app đã tạm dừng + khôi phục hibernatemode.
+        // Khi máy thức dậy sau khi bấm nút hibernate: chạy lại app đã tạm dừng + khôi
+        // phục hibernatemode một-lần (nếu có). .didWake chỉ phát khi wake đầy đủ do người
+        // dùng, không phát cho dark/maintenance wake.
         sleepWake.events
             .receive(on: DispatchQueue.main)
             .sink { [weak self] event in
@@ -46,51 +44,23 @@ public final class PowerState: ObservableObject {
             }
             .store(in: &cancellables)
 
-        #if canImport(AppKit)
-        // Trạng thái KHOÁ / MỞ KHOÁ màn hình (distributed notifications).
+        // "Khi KHOÁ màn hình" → ép máy ngủ ngay (→ hibernate vì hibernatemode 25 bền vững).
+        // Cần thiết vì chỉ khoá màn hình thì macOS KHÔNG tự ngủ — nhất là khi có app/MDM
+        // (Handoff, Spotlight, studentd…) giữ assertion chặn idle-sleep → máy chạy & nóng.
+        // sleepNow() là forced sleep nên vượt qua được các assertion idle-preventer đó.
         let distributed = DistributedNotificationCenter.default()
         distributedObservers.append(distributed.addObserver(
             forName: Notification.Name("com.apple.screenIsLocked"),
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            Task { @MainActor in self?.setScreenLocked(true) }
+            Task { @MainActor in self?.handleScreenLocked() }
         })
-        distributedObservers.append(distributed.addObserver(
-            forName: Notification.Name("com.apple.screenIsUnlocked"),
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.setScreenLocked(false) }
-        })
-
-        // Trạng thái TẮT / SÁNG màn hình (workspace notifications).
-        // Khi user ấn phím để nhập mật khẩu → màn hình SÁNG → không hibernate nữa.
-        let workspace = NSWorkspace.shared.notificationCenter
-        workspaceObservers.append(workspace.addObserver(
-            forName: NSWorkspace.screensDidSleepNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.setDisplayAsleep(true) }
-        })
-        workspaceObservers.append(workspace.addObserver(
-            forName: NSWorkspace.screensDidWakeNotification,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            Task { @MainActor in self?.setDisplayAsleep(false) }
-        })
-        #endif
     }
 
     deinit {
-        #if canImport(AppKit)
         let distributed = DistributedNotificationCenter.default()
         distributedObservers.forEach { distributed.removeObserver($0) }
-        let workspace = NSWorkspace.shared.notificationCenter
-        workspaceObservers.forEach { workspace.removeObserver($0) }
-        #endif
     }
 
     // MARK: - Chống tự ngủ (toggle on/off)
@@ -115,109 +85,102 @@ public final class PowerState: ObservableObject {
         }
     }
 
-    // MARK: - Hibernate khi khoá màn hình
+    // MARK: - Hibernate khi khoá/ngủ (cấu hình bền vững)
 
     public func setHibernateOnLock(_ on: Bool) {
-        isHibernateOnLockEnabled = on
-        UserDefaults.standard.set(on, forKey: Self.hibernateOnLockKey)
-        statusMessage = on
-            ? "Đã bật hibernate khi khoá màn hình."
-            : "Đã tắt hibernate khi khoá màn hình."
+        let defaults = UserDefaults.standard
+        if on {
+            // Lưu cấu hình hiện tại để khôi phục khi tắt.
+            let prevMode = controller.currentHibernateMode() ?? 3
+            let prevTCP  = controller.currentPowerValue("tcpkeepalive") ?? 1
+
+            // Đặt hibernatemode 25 (ghi RAM ra đĩa + cắt nguồn khi ngủ). Helper lỗi → KHÔNG
+            // bật toggle, để trạng thái UI khớp với hệ thống.
+            do {
+                try controller.setHibernateMode(25)
+            } catch {
+                statusMessage = "Không bật được hibernate khi khoá: \(error)"
+                return
+            }
+            // Tắt wake-for-network (tcpkeepalive=0, scope pin) để máy thật sự cắt nguồn khi
+            // ngủ thay vì dark wake giữ mạng. Best-effort: lỗi cũng không chặn.
+            try? controller.setPowerValue("tcpkeepalive", value: 0, scope: "-b")
+
+            defaults.set(prevMode, forKey: Self.savedHibernateModeKey)
+            defaults.set(prevTCP,  forKey: Self.savedTCPKeepAliveKey)
+            isHibernateOnLockEnabled = true
+            defaults.set(true, forKey: Self.hibernateOnLockKey)
+            statusMessage = "Đã bật: máy sẽ hibernate (ghi RAM ra đĩa rồi cắt nguồn) mỗi khi ngủ, kể cả khi gập máy."
+        } else {
+            // Khôi phục giá trị đã lưu (nếu có). hibernatemode có thể = 0 hợp lệ nên kiểm
+            // tra sự tồn tại của key thay vì giá trị.
+            if defaults.object(forKey: Self.savedHibernateModeKey) != nil {
+                controller.restoreHibernateMode(defaults.integer(forKey: Self.savedHibernateModeKey))
+            }
+            if defaults.object(forKey: Self.savedTCPKeepAliveKey) != nil {
+                controller.restorePowerValue("tcpkeepalive",
+                                             value: defaults.integer(forKey: Self.savedTCPKeepAliveKey),
+                                             scope: "-b")
+            }
+            defaults.removeObject(forKey: Self.savedHibernateModeKey)
+            defaults.removeObject(forKey: Self.savedTCPKeepAliveKey)
+            isHibernateOnLockEnabled = false
+            defaults.set(false, forKey: Self.hibernateOnLockKey)
+            statusMessage = "Đã tắt hibernate khi khoá màn hình (khôi phục cấu hình nguồn cũ)."
+        }
     }
 
-    private func setScreenLocked(_ locked: Bool) {
-        isScreenLocked = locked
-        if locked { evaluateHibernateOnLock() }
-    }
-
-    private func setDisplayAsleep(_ asleep: Bool) {
-        isDisplayAsleep = asleep
-        if asleep { evaluateHibernateOnLock() }
-    }
-
-    /// Chỉ hibernate khi màn hình ĐÃ TẮT và ĐANG KHOÁ.
-    /// Lúc user sáng màn hình để nhập mật khẩu (isDisplayAsleep == false) sẽ không
-    /// bao giờ vào nhánh hibernate → tránh vòng lặp wake↔sleep gây nhấp nháy.
-    private func evaluateHibernateOnLock() {
-        guard isHibernateOnLockEnabled,
-              isScreenLocked,
-              isDisplayAsleep,
-              !isHibernating
-        else { return }
-        hibernateNow(lockScreenFirst: false)
-    }
-
-    // MARK: - Hibernate
+    // MARK: - Hibernate ngay (nút bấm)
 
     public func hibernateNow() {
-        hibernateNow(lockScreenFirst: true)
-    }
-
-    private func hibernateNow(lockScreenFirst: Bool) {
         guard !isHibernating else { return }
         isHibernating = true
 
-        // Caffeinate giữ sleep-assertion sẽ chặn máy ngủ lại sau dark wake → tắt trước.
-        if isPreventingSleep {
-            setPreventSleep(false)
+        // Caffeinate giữ sleep-assertion sẽ chặn máy ngủ lại → tắt trước.
+        if isPreventingSleep { setPreventSleep(false) }
+
+        // Toggle BẬT → hibernatemode đã là 25 (bền vững), không cần đổi/khôi phục.
+        // Toggle TẮT → đặt 25 tạm thời, lưu giá trị cũ để trả lại khi thức dậy.
+        if !isHibernateOnLockEnabled {
+            oneShotPreviousMode = controller.currentHibernateMode()
+            do {
+                try controller.setHibernateMode(25)
+            } catch {
+                statusMessage = "Lỗi hibernate: \(error)"
+                isHibernating = false
+                oneShotPreviousMode = nil
+                return
+            }
         }
 
-        // 1. Lưu hibernatemode hiện tại để khôi phục sau khi thức dậy.
-        previousHibernateMode = controller.currentHibernateMode()
-
-        // 2. Đặt hibernatemode 25 qua privileged helper. Thất bại → dừng, không đụng tới app.
-        do {
-            try controller.setHibernateMode(25)
-        } catch {
-            statusMessage = "Lỗi hibernate: \(error)"
-            isHibernating = false
-            previousHibernateMode = nil
-            return
-        }
-
-        // 2b. Giảm hao pin khi ngủ: tắt wake-for-network (tcpkeepalive=0) + rút ngắn
-        //     standby từ 3h → 10 phút. Chỉ đặt scope pin (-b); lưu giá trị cũ để khôi
-        //     phục khi thức dậy. Best-effort: lỗi cũng không chặn hibernate.
-        previousTCPKeepAlive   = controller.currentPowerValue("tcpkeepalive")   ?? 1
-        previousStandbyDelayLow = controller.currentPowerValue("standbydelaylow") ?? 10800
-        try? controller.setPowerValue("tcpkeepalive",   value: 0,   scope: "-b")
-        try? controller.setPowerValue("standbydelaylow", value: 600, scope: "-b")
-
-        // 3. Tạm dừng mọi app người dùng (tự chạy lại khi wake).
+        // Tạm dừng app người dùng (tự chạy lại khi wake), khoá màn hình rồi ngủ.
         suspendedPIDs = controller.suspendAllApps()
-
-        // 4. Khoá màn hình + đưa máy vào hibernate.
-        if lockScreenFirst {
-            controller.lockScreen()
-        }
+        controller.lockScreen()
         controller.sleepNow()
         statusMessage = "Đang đưa máy vào hibernate…"
     }
 
+    /// macOS vừa khoá màn hình. Toggle bật → ép máy ngủ ngay để hibernate.
+    private func handleScreenLocked() {
+        guard isHibernateOnLockEnabled, !isHibernating else { return }
+        isHibernating = true
+        // Caffeinate (chống tự ngủ) mâu thuẫn với ý định hibernate-khi-khoá → tắt trước.
+        if isPreventingSleep { setPreventSleep(false) }
+        controller.sleepNow()   // hibernatemode 25 đã bền vững → ngủ = hibernate, cắt nguồn.
+        statusMessage = "Màn hình khoá → đang đưa máy vào hibernate…"
+    }
+
     private func handleWake() {
-        // Lưu ý: .didWake chỉ phát khi wake ĐẦY ĐỦ do người dùng (ấn nút/phím),
-        // KHÔNG phát cho dark/maintenance wake → ở đây luôn là người dùng muốn dùng
-        // máy lại. Resume app + khôi phục hibernatemode như bình thường.
         if !suspendedPIDs.isEmpty {
             controller.resumeApps(suspendedPIDs)
             suspendedPIDs = []
         }
-        if let mode = previousHibernateMode {
+        // Chỉ khôi phục hibernatemode một-lần (nút bấm lúc toggle tắt). Khi toggle bật,
+        // 25 là bền vững nên oneShotPreviousMode = nil → giữ nguyên.
+        if let mode = oneShotPreviousMode {
             controller.restoreHibernateMode(mode)
-            previousHibernateMode = nil
+            oneShotPreviousMode = nil
         }
-        // Khôi phục tcpkeepalive + standbydelaylow về giá trị trước khi hibernate.
-        if let v = previousTCPKeepAlive {
-            controller.restorePowerValue("tcpkeepalive", value: v, scope: "-b")
-            previousTCPKeepAlive = nil
-        }
-        if let v = previousStandbyDelayLow {
-            controller.restorePowerValue("standbydelaylow", value: v, scope: "-b")
-            previousStandbyDelayLow = nil
-        }
-        // Sau khi user thức máy, màn hình chắc chắn đang SÁNG → reset cờ để không
-        // hibernate lại cho tới khi màn hình tắt lần nữa (đề phòng thiếu screensDidWake).
-        isDisplayAsleep = false
         isHibernating = false
         statusMessage = ""
     }

@@ -45,6 +45,11 @@ struct MenuBarView: View {
                 statRow("Nhiệt độ", value: String(format: "%.0f°C", temp),
                         fraction: min(temp / 100, 1), color: .orange)
             }
+            if let limit = metrics.cpuSpeedLimit {
+                let throttled = limit < 100
+                statRow("CPU Limit", value: throttled ? "\(limit)% • bị bóp xung" : "\(limit)%",
+                        fraction: Double(limit) / 100, color: throttled ? .red : .green)
+            }
             HStack(spacing: 12) {
                 Label(Format.rate(metrics.netRxBytesPerSec), systemImage: "arrow.down")
                 Label(Format.rate(metrics.netTxBytesPerSec), systemImage: "arrow.up")

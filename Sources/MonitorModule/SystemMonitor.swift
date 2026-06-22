@@ -120,6 +120,7 @@ public final class SystemMonitor: ObservableObject {
         prevSampleTime = now
 
         let cpuTemp = SMCReader.cpuTemperature()
+        let speedLimit = CPUPowerReader.speedLimit()
 
         // MON-04: đọc tốc độ quạt qua SMC.
         var fans: [Double] = []
@@ -137,7 +138,8 @@ public final class SystemMonitor: ObservableObject {
             netRxBytesPerSec: rxRate,
             netTxBytesPerSec: txRate,
             cpuTemperatureCelsius: cpuTemp,
-            fanRPMs: fans
+            fanRPMs: fans,
+            cpuSpeedLimit: speedLimit
         )
 
         DispatchQueue.main.async { [weak self] in

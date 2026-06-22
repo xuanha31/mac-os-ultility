@@ -46,6 +46,21 @@ struct MonitorView: View {
                 }
             }
 
+            // Giới hạn tốc độ CPU (CPU_Speed_Limit) — < 100 nghĩa là đang bị throttle.
+            if let limit = metrics.cpuSpeedLimit {
+                let throttled = limit < 100
+                ProCard {
+                    CardHeader(icon: "speedometer", title: "cpu limit",
+                               value: "\(limit)%",
+                               valueColor: throttled ? Theme.red : Theme.textPrimary)
+                    StatBar(fraction: Double(limit) / 100.0,
+                            color: throttled ? Theme.red : Theme.green)
+                    if throttled {
+                        StatRow(label: "trạng thái", value: "CPU đang bị bóp xung (throttle)")
+                    }
+                }
+            }
+
             // Tốc độ quạt
             if monitor.fanSpeedSupported {
                 ProCard {

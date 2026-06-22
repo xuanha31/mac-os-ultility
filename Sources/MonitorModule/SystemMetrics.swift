@@ -13,6 +13,9 @@ public struct SystemMetrics: Equatable, Sendable {
     public var cpuTemperatureCelsius: Double?
     /// Tốc độ quạt (RPM) đọc từ SMC (MON-04). Rỗng nếu không có quạt / không đọc được.
     public var fanRPMs: [Double]
+    /// Giới hạn tốc độ CPU (CPU_Speed_Limit, 0...100). 100 = không bị bóp;
+    /// < 100 = đang bị throttle. nil nếu máy không hỗ trợ (vd Apple Silicon).
+    public var cpuSpeedLimit: Int?
 
     public init(
         cpuUsage: Double = 0,
@@ -21,7 +24,8 @@ public struct SystemMetrics: Equatable, Sendable {
         netRxBytesPerSec: Double = 0,
         netTxBytesPerSec: Double = 0,
         cpuTemperatureCelsius: Double? = nil,
-        fanRPMs: [Double] = []
+        fanRPMs: [Double] = [],
+        cpuSpeedLimit: Int? = nil
     ) {
         self.cpuUsage = cpuUsage
         self.memoryUsed = memoryUsed
@@ -30,6 +34,7 @@ public struct SystemMetrics: Equatable, Sendable {
         self.netTxBytesPerSec = netTxBytesPerSec
         self.cpuTemperatureCelsius = cpuTemperatureCelsius
         self.fanRPMs = fanRPMs
+        self.cpuSpeedLimit = cpuSpeedLimit
     }
 
     public static let zero = SystemMetrics()

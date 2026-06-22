@@ -6,13 +6,17 @@ import Core
 import CFreeRDP
 
 // RD Phase 2: phiên RDP dùng FreeRDP 3.x (C interop qua CFreeRDP).
-// - RDPClient chạy event loop FreeRDP trên thread nền, render GDI framebuffer → CGImage.
-// - Callback C (@convention(c), không capture) tra ngược RDPClient qua registry theo con
-//   trỏ rdpContext.
-// - RDPFramebufferNSView vẽ ảnh + forward chuột/bàn phím.
-//
-// ⚠️ Cần kiểm thử với máy Windows thật (bật Remote Desktop). Cert đang auto-accept
-//    (FreeRDP_AutoAcceptCertificate) — nên thêm xác nhận người dùng về sau.
+// - Dùng API CLIENT đầy đủ (freerdp_client_context_new + RDP_CLIENT_ENTRY_POINTS) thay
+//   vì freerdp_new() trần — để FreeRDP dựng đủ tầng client common (kênh, thương lượng
+//   bảo mật) GIỐNG sdl-freerdp. Bản trần thiếu các callback chứng chỉ/đăng nhập nên NLA
+//   thường rớt → connect fail, đúng lỗi "không kết nối được" gặp phải.
+// - ClientNew đăng ký callback: PreConnect/PostConnect + VerifyCertificateEx /
+//   VerifyChangedCertificateEx (auto-accept = /cert:ignore) + AuthenticateEx (dùng
+//   credentials đã set sẵn) + LogonErrorInfo.
+// - RDPClient chạy event loop trên thread nền, render GDI framebuffer → CGImage.
+// - Callback C (@convention(c), không capture) tra ngược RDPClient qua registry theo
+//   con trỏ rdpContext. RDPFramebufferNSView vẽ ảnh + forward chuột/bàn phím.
+// - Connect fail → đọc freerdp_get_last_error_string để hiện lý do THẬT (NLA/TLS/cert…).
 
 // MARK: - Registry: rdpContext* → RDPClient
 
@@ -25,7 +29,29 @@ final class RDPClientRegistry: @unchecked Sendable {
     func get(_ key: UnsafeMutableRawPointer) -> RDPClient? { lock.lock(); defer { lock.unlock() }; return map[key] }
 }
 
-// MARK: - C callbacks
+// MARK: - C callbacks (@convention(c), không capture)
+
+/// Entry point ClientNew: nơi chuẩn để gắn callback lên instance (chạy bên trong
+/// freerdp_client_context_new, sau khi client common đã set default — ta ghi đè để
+/// KHÔNG prompt stdin như client CLI mà tự động chấp nhận, dùng credentials đã set sẵn).
+private func rdpClientNew(_ instance: UnsafeMutablePointer<freerdp>?,
+                          _ context: UnsafeMutablePointer<rdpContext>?) -> ObjCBool {
+    guard let instance else { return false }
+    instance.pointee.PreConnect = rdpPreConnect
+    instance.pointee.PostConnect = rdpPostConnect
+    instance.pointee.AuthenticateEx = rdpAuthenticateEx
+    instance.pointee.VerifyCertificateEx = rdpVerifyCertificateEx
+    instance.pointee.VerifyChangedCertificateEx = rdpVerifyChangedCertificateEx
+    instance.pointee.LogonErrorInfo = rdpLogonErrorInfo
+    // Đăng ký handler kênh: khi GFX nối → gdi_graphics_pipeline_init đổ GFX vào primary_buffer.
+    if let context { cfreerdp_subscribe_channel_handlers(context) }
+    return true
+}
+
+private func rdpClientFree(_ instance: UnsafeMutablePointer<freerdp>?,
+                           _ context: UnsafeMutablePointer<rdpContext>?) {
+    // gdi do FreeRDP tự giải phóng khi free context; không cần làm gì thêm ở đây.
+}
 
 private func rdpPreConnect(_ instance: UnsafeMutablePointer<freerdp>?) -> ObjCBool {
     guard let instance, let ctx = instance.pointee.context, let settings = ctx.pointee.settings else { return false }
@@ -37,6 +63,14 @@ private func rdpPostConnect(_ instance: UnsafeMutablePointer<freerdp>?) -> ObjCB
     guard let instance, let ctx = instance.pointee.context else { return false }
     if !gdi_init(instance, cfreerdp_pixel_format_bgra32()) { return false }
     ctx.pointee.update?.pointee.EndPaint = rdpEndPaint
+    // BẮT BUỘC khi dùng GFX: ResetGraphics gọi update->DesktopResize, NULL → assert/abort
+    // (crash gdi_ResetGraphics). gdi_ResetGraphics đã tự gdi_resize buffer; timer đọc lại
+    // gdi.width/height/stride mỗi tick nên callback chỉ cần trả true.
+    ctx.pointee.update?.pointee.DesktopResize = rdpDesktopResize
+    return true
+}
+
+private func rdpDesktopResize(_ context: UnsafeMutablePointer<rdpContext>?) -> ObjCBool {
     return true
 }
 
@@ -44,6 +78,44 @@ private func rdpEndPaint(_ context: UnsafeMutablePointer<rdpContext>?) -> ObjCBo
     guard let context else { return false }
     RDPClientRegistry.shared.get(UnsafeMutableRawPointer(context))?.renderFrame()
     return true
+}
+
+/// Credentials đã set sẵn trong settings → chấp nhận, không hỏi (tránh prompt stdin).
+private func rdpAuthenticateEx(_ instance: UnsafeMutablePointer<freerdp>?,
+                               _ username: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
+                               _ password: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
+                               _ domain: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
+                               _ reason: rdp_auth_reason) -> ObjCBool {
+    return true
+}
+
+/// Auto-accept chứng chỉ (tương đương /cert:ignore). 1 = chấp nhận cho phiên này.
+private func rdpVerifyCertificateEx(_ instance: UnsafeMutablePointer<freerdp>?,
+                                    _ host: UnsafePointer<CChar>?, _ port: UInt16,
+                                    _ commonName: UnsafePointer<CChar>?,
+                                    _ subject: UnsafePointer<CChar>?,
+                                    _ issuer: UnsafePointer<CChar>?,
+                                    _ fingerprint: UnsafePointer<CChar>?,
+                                    _ flags: UInt32) -> UInt32 {
+    return 1
+}
+
+private func rdpVerifyChangedCertificateEx(_ instance: UnsafeMutablePointer<freerdp>?,
+                                           _ host: UnsafePointer<CChar>?, _ port: UInt16,
+                                           _ commonName: UnsafePointer<CChar>?,
+                                           _ subject: UnsafePointer<CChar>?,
+                                           _ issuer: UnsafePointer<CChar>?,
+                                           _ newFingerprint: UnsafePointer<CChar>?,
+                                           _ oldSubject: UnsafePointer<CChar>?,
+                                           _ oldIssuer: UnsafePointer<CChar>?,
+                                           _ oldFingerprint: UnsafePointer<CChar>?,
+                                           _ flags: UInt32) -> UInt32 {
+    return 1
+}
+
+private func rdpLogonErrorInfo(_ instance: UnsafeMutablePointer<freerdp>?,
+                               _ data: UInt32, _ type: UInt32) -> Int32 {
+    return 1
 }
 
 // MARK: - RDPClient (thread nền)
@@ -58,7 +130,7 @@ final class RDPClient: @unchecked Sendable {
     private let password: String
     private let domain: String
 
-    private var instance: UnsafeMutablePointer<freerdp>?
+    private var context: UnsafeMutablePointer<rdpContext>?
     private var thread: Thread?
     private var running = false
 
@@ -75,40 +147,67 @@ final class RDPClient: @unchecked Sendable {
         t.start()
     }
 
-    func stop() {
-        running = false
-        if let inst = instance, let ctx = inst.pointee.context {
-            freerdp_abort_connect_context(ctx)
+    /// Chuyển [String] → (argc, char**) tạm thời cho hàm parse C; tự free sau khi dùng.
+    private static func withCStringArray<R>(_ strings: [String],
+                                            _ body: (Int32, UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>) -> R) -> R {
+        var cStrings: [UnsafeMutablePointer<CChar>?] = strings.map { strdup($0) }
+        cStrings.append(nil) // argv kết thúc bằng NULL
+        defer { for p in cStrings where p != nil { free(p) } }
+        return cStrings.withUnsafeMutableBufferPointer { buf in
+            body(Int32(strings.count), buf.baseAddress!)
         }
     }
 
-    private func run() {
-        guard let inst = freerdp_new() else { onState?(.failed("freerdp_new lỗi")); return }
-        instance = inst
-        inst.pointee.PreConnect = rdpPreConnect
-        inst.pointee.PostConnect = rdpPostConnect
+    func stop() {
+        running = false
+        if let ctx = context { freerdp_abort_connect_context(ctx) }
+    }
 
-        guard freerdp_context_new(inst),
-              let ctx = inst.pointee.context,
-              let settings = ctx.pointee.settings else {
-            onState?(.failed("freerdp_context_new lỗi")); cleanup(); return
+    private func run() {
+        // Dựng entry points cho client API. ClientNew sẽ gắn các callback lên instance.
+        var entry = RDP_CLIENT_ENTRY_POINTS()
+        entry.Size = UInt32(MemoryLayout<RDP_CLIENT_ENTRY_POINTS>.size)
+        entry.Version = cfreerdp_client_interface_version()
+        entry.ContextSize = cfreerdp_context_size()
+        entry.ClientNew = rdpClientNew
+        entry.ClientFree = rdpClientFree
+
+        guard let ctx = freerdp_client_context_new(&entry) else {
+            onState?(.failed("freerdp_client_context_new lỗi")); return
+        }
+        context = ctx
+        guard let inst = ctx.pointee.instance, let settings = ctx.pointee.settings else {
+            onState?(.failed("context.instance/settings lỗi")); cleanup(); return
         }
 
-        freerdp_settings_set_string(settings, FreeRDP_ServerHostname, host)
-        freerdp_settings_set_uint32(settings, FreeRDP_ServerPort, UInt32(port))
-        if !username.isEmpty { freerdp_settings_set_string(settings, FreeRDP_Username, username) }
+        // Cấu hình QUA parse command-line như sdl-freerdp — KHÔNG set tay từng setting.
+        // Set tay thiếu các mặc định về capabilities/codecs/order-support → server gửi
+        // DEACTIVATE_ALL ở bước activation → freerdp_post_connect failed. parse_command_line
+        // dựng đủ bộ mặc định nhất quán nên kết nối được.
+        // Password KHÔNG đưa vào argv (tránh lộ qua ps) → set riêng qua API sau khi parse.
+        var args = ["MacUtil", "/cert:ignore", "/dynamic-resolution", "/v:\(host):\(port)"]
+        if !username.isEmpty { args.append("/u:\(username)") }
+        if !domain.isEmpty   { args.append("/d:\(domain)") }
+        let parseRC = Self.withCStringArray(args) { argc, argv in
+            freerdp_client_settings_parse_command_line_arguments(settings, argc, argv, false)
+        }
+        guard parseRC == 0 else {
+            onState?(.failed("Cấu hình RDP lỗi (parse_command_line rc=\(parseRC))")); cleanup(); return
+        }
         if !password.isEmpty { freerdp_settings_set_string(settings, FreeRDP_Password, password) }
-        if !domain.isEmpty   { freerdp_settings_set_string(settings, FreeRDP_Domain, domain) }
-        freerdp_settings_set_uint32(settings, FreeRDP_DesktopWidth, 1280)
-        freerdp_settings_set_uint32(settings, FreeRDP_DesktopHeight, 800)
-        freerdp_settings_set_uint32(settings, FreeRDP_ColorDepth, 32)
-        freerdp_settings_set_bool(settings, FreeRDP_AutoAcceptCertificate, true)
+        // GFX giữ BẬT (server này yêu cầu — tắt là từ chối kết nối). Việc đổ GFX vào
+        // gdi.primary_buffer do handler kênh (đăng ký ở rdpClientNew) tự lo qua
+        // gdi_graphics_pipeline_init.
 
         RDPClientRegistry.shared.set(UnsafeMutableRawPointer(ctx), self)
 
         onState?(.connecting)
         if !freerdp_connect(inst) {
-            onState?(.failed("Kết nối RDP thất bại (kiểm tra host/credentials)."))
+            let code = freerdp_get_last_error(ctx)
+            let name = freerdp_get_last_error_name(code).map { String(cString: $0) } ?? "?"
+            let detail = freerdp_get_last_error_string(code).map { String(cString: $0) } ?? ""
+            let hex = String(code, radix: 16)
+            onState?(.failed("RDP thất bại: \(detail) [\(name), 0x\(hex)]"))
             cleanup(); return
         }
         onState?(.connected)
@@ -132,7 +231,7 @@ final class RDPClient: @unchecked Sendable {
     }
 
     func renderFrame() {
-        guard let inst = instance, let ctx = inst.pointee.context,
+        guard let ctx = context,
               let gdi = ctx.pointee.gdi, let buf = gdi.pointee.primary_buffer else { return }
         let w = Int(gdi.pointee.width), h = Int(gdi.pointee.height), stride = Int(gdi.pointee.stride)
         guard w > 0, h > 0, stride > 0 else { return }
@@ -148,24 +247,28 @@ final class RDPClient: @unchecked Sendable {
     }
 
     func sendMouse(flags: UInt16, x: UInt16, y: UInt16) {
-        guard let inst = instance, let ctx = inst.pointee.context, let input = ctx.pointee.input else { return }
+        guard let ctx = context, let input = ctx.pointee.input else { return }
         _ = freerdp_input_send_mouse_event(input, flags, x, y)
     }
 
     func sendUnicode(_ code: UInt16, down: Bool) {
-        guard let inst = instance, let ctx = inst.pointee.context, let input = ctx.pointee.input else { return }
+        guard let ctx = context, let input = ctx.pointee.input else { return }
         _ = freerdp_input_send_unicode_keyboard_event(input, down ? 0 : 0x8000, code) // 0x8000 = KBD_FLAGS_RELEASE
     }
 
+    /// Gửi phím theo SCANCODE (PC/AT set 1). Server Linux (gnome-remote-desktop/xrdp)
+    /// thường bỏ qua unicode keyboard nên dùng scancode mới gõ được.
+    func sendScancode(_ rdpScancode: UInt16, down: Bool) {
+        guard let ctx = context, let input = ctx.pointee.input else { return }
+        _ = freerdp_input_send_keyboard_event_ex(input, down, false, UInt32(rdpScancode))
+    }
+
     private func cleanup() {
-        if let inst = instance {
-            if let ctx = inst.pointee.context {
-                RDPClientRegistry.shared.remove(UnsafeMutableRawPointer(ctx))
-            }
-            freerdp_context_free(inst)
-            freerdp_free(inst)
+        if let ctx = context {
+            RDPClientRegistry.shared.remove(UnsafeMutableRawPointer(ctx))
+            freerdp_client_context_free(ctx)
         }
-        instance = nil
+        context = nil
     }
 }
 
@@ -178,20 +281,18 @@ final class RDPFramebufferNSView: NSView {
     private var image: CGImage?
 
     override var acceptsFirstResponder: Bool { true }
-    override var isFlipped: Bool { true }   // gốc tọa độ trên-trái như RDP
-
-    func setImage(_ img: CGImage) { image = img; needsDisplay = true }
-
-    override func draw(_ dirtyRect: NSRect) {
-        guard let cg = NSGraphicsContext.current?.cgContext else { return }
-        cg.setFillColor(NSColor.black.cgColor)
-        cg.fill(bounds)
-        if let image { cg.draw(image, in: bounds) }
+    // Không override isFlipped (mặc định false, gốc dưới-trái). Render bằng layer.contents
+    // như VNC: hệ thống vẽ CGImage ĐÚNG CHIỀU + tự co giãn theo contentsGravity, và chạy
+    // được cả khi tách ra cửa sổ riêng (không phụ thuộc draw() có được gọi hay không).
+    func setImage(_ img: CGImage) {
+        image = img
+        layer?.contents = img
     }
 
     private func remotePoint(_ event: NSEvent) -> (UInt16, UInt16) {
-        let p = convert(event.locationInWindow, from: nil)
+        var p = convert(event.locationInWindow, from: nil)
         guard let image, bounds.width > 0, bounds.height > 0 else { return (0, 0) }
+        p.y = bounds.height - p.y   // view không flip → đổi gốc về trên-trái như RDP
         let rx = max(0, min(CGFloat(image.width) - 1, p.x / bounds.width * CGFloat(image.width)))
         let ry = max(0, min(CGFloat(image.height) - 1, p.y / bounds.height * CGFloat(image.height)))
         return (UInt16(rx), UInt16(ry))
@@ -215,8 +316,30 @@ final class RDPFramebufferNSView: NSView {
         onMouse?(flags, x, y)
     }
 
-    override func keyDown(with e: NSEvent) {
-        for u in (e.characters ?? "").utf16 { onKey?(u, true); onKey?(u, false) }
+    // Gửi theo macOS keyCode (onKey ánh xạ → RDP scancode). down/up riêng để giữ phím
+    // (Shift, lặp phím) đúng. Không tự nhả ở keyDown nữa.
+    override func keyDown(with e: NSEvent) { onKey?(e.keyCode, true) }
+    override func keyUp(with e: NSEvent) { onKey?(e.keyCode, false) }
+
+    private var lastFlags: NSEvent.ModifierFlags = []
+    override func flagsChanged(with e: NSEvent) {
+        let f = e.modifierFlags
+        // mac keyCode của modifier trái → onKey ánh xạ sang RDP scancode.
+        func sync(_ flag: NSEvent.ModifierFlags, _ macKeyCode: UInt16) {
+            let now = f.contains(flag), was = lastFlags.contains(flag)
+            if now != was { onKey?(macKeyCode, now) }
+        }
+        sync(.shift,   0x38)   // Left Shift
+        sync(.control, 0x3B)   // Left Control
+        sync(.option,  0x3A)   // Left Option/Alt
+        sync(.command, 0x37)   // Left Command → Super
+        lastFlags = f
+    }
+
+    // Nhận phím ngay khi tab hiện ra (không cần click trước).
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if window != nil { window?.makeFirstResponder(self) }
     }
 
     override func updateTrackingAreas() {
@@ -228,6 +351,42 @@ final class RDPFramebufferNSView: NSView {
     }
 }
 
+// MARK: - Bảng phím
+
+/// macOS virtual keyCode (kVK_*) → RDP scancode (PC/AT set 1 make code).
+/// Đủ cho bàn phím US-ANSI: chữ, số, ký hiệu, Enter/Tab/Space/Backspace/Esc, modifier.
+private let macKeyToRDPScancode: [UInt16: UInt16] = [
+    0x00: 0x1E, 0x0B: 0x30, 0x08: 0x2E, 0x02: 0x20, 0x0E: 0x12, 0x03: 0x21, // A B C D E F
+    0x05: 0x22, 0x04: 0x23, 0x22: 0x17, 0x26: 0x24, 0x28: 0x25, 0x25: 0x26, // G H I J K L
+    0x2E: 0x32, 0x2D: 0x31, 0x1F: 0x18, 0x23: 0x19, 0x0C: 0x10, 0x0F: 0x13, // M N O P Q R
+    0x01: 0x1F, 0x11: 0x14, 0x20: 0x16, 0x09: 0x2F, 0x0D: 0x11, 0x07: 0x2D, // S T U V W X
+    0x10: 0x15, 0x06: 0x2C,                                                 // Y Z
+    0x12: 0x02, 0x13: 0x03, 0x14: 0x04, 0x15: 0x05, 0x17: 0x06,             // 1 2 3 4 5
+    0x16: 0x07, 0x1A: 0x08, 0x1C: 0x09, 0x19: 0x0A, 0x1D: 0x0B,             // 6 7 8 9 0
+    0x24: 0x1C, // Return        0x30: Tab     0x31: Space   0x33: Backspace  0x35: Esc
+    0x30: 0x0F, 0x31: 0x39, 0x33: 0x0E, 0x35: 0x01,
+    0x1B: 0x0C, 0x18: 0x0D, // - =
+    0x21: 0x1A, 0x1E: 0x1B, // [ ]
+    0x2A: 0x2B, 0x29: 0x27, 0x27: 0x28, 0x32: 0x29, // backslash ; ' `
+    0x2B: 0x33, 0x2F: 0x34, 0x2C: 0x35, // , . /
+    // Modifiers (trái)
+    0x38: 0x2A, // Left Shift
+    0x3B: 0x1D, // Left Control
+    0x3A: 0x38, // Left Option/Alt
+    0x37: 0x5B, // Left Command → Super/Win
+    // Phím MỞ RỘNG: scancode | KBDEXT(0x100). Thiếu bit này → phím mũi tên/điều hướng
+    // không ăn trên remote.
+    0x7B: 0x14B, // ← Left      (0x4B | 0x100)
+    0x7C: 0x14D, // → Right     (0x4D | 0x100)
+    0x7D: 0x150, // ↓ Down      (0x50 | 0x100)
+    0x7E: 0x148, // ↑ Up        (0x48 | 0x100)
+    0x73: 0x147, // Home        (0x47 | 0x100)
+    0x77: 0x14F, // End         (0x4F | 0x100)
+    0x74: 0x149, // Page Up     (0x49 | 0x100)
+    0x79: 0x151, // Page Down   (0x51 | 0x100)
+    0x75: 0x153, // Forward Delete (0x53 | 0x100)
+]
+
 // MARK: - RDPSession
 
 @MainActor
@@ -238,6 +397,9 @@ final class RDPSession: RemoteSession {
 
     private let view = RDPFramebufferNSView()
     private let client: RDPClient
+    // Render bằng timer đọc gdi.primary_buffer (~30fps khi đã kết nối). GFX không gọi EndPaint
+    // nên không thể dựa vào callback; primary_buffer luôn được mọi đường update ghi vào.
+    private var renderTimer: Timer?
 
     init(profile: RemoteProfile, store: RemoteProfileStore) {
         self.id = profile.id
@@ -248,18 +410,48 @@ final class RDPSession: RemoteSession {
                                 password: store.password(for: profile) ?? "",
                                 domain: "")
         view.wantsLayer = true
+        view.layer?.contentsGravity = .resize   // kéo đầy khung (khớp cách map toạ độ chuột)
+        view.layer?.backgroundColor = NSColor.black.cgColor
         view.onMouse = { [weak client] f, x, y in client?.sendMouse(flags: f, x: x, y: y) }
-        view.onKey   = { [weak client] code, down in client?.sendUnicode(code, down: down) }
+        view.onKey   = { [weak client] macKeyCode, down in
+            guard let rdp = macKeyToRDPScancode[macKeyCode] else { return }
+            client?.sendScancode(rdp, down: down)
+        }
         client.onState = { [weak self] st in
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.onStateChange?(st) } }
+            DispatchQueue.main.async { MainActor.assumeIsolated {
+                guard let self else { return }
+                self.onStateChange?(st)
+                switch st {
+                case .connected:                 self.startRenderTimer()
+                case .disconnected, .failed:     self.stopRenderTimer()
+                case .connecting:                break
+                }
+            } }
         }
         client.onImage = { [weak self] img in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.view.setImage(img) } }
         }
     }
 
+    deinit { renderTimer?.invalidate() }
+
+    private func startRenderTimer() {
+        stopRenderTimer()
+        let t = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
+            self?.client.renderFrame()
+        }
+        // .common để vẫn vẽ khi đang kéo/resize cửa sổ.
+        RunLoop.main.add(t, forMode: .common)
+        renderTimer = t
+    }
+
+    private func stopRenderTimer() {
+        renderTimer?.invalidate()
+        renderTimer = nil
+    }
+
     func makeView() -> NSView { view }
     func connect() { onStateChange?(.connecting); client.start() }
-    func disconnect() { client.stop() }
+    func disconnect() { stopRenderTimer(); client.stop() }
 }
 #endif

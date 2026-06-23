@@ -550,7 +550,7 @@ struct SFTPPanel: View {
     let sessionID: UUID
 
     @State private var path = "."
-    @State private var entries: [String] = []
+    @State private var entries: [SFTPEntry] = []
     @State private var busy = false
     @State private var status = ""
     @State private var dropTargeted = false
@@ -570,18 +570,33 @@ struct SFTPPanel: View {
             .padding(8)
             .background(Theme.surface)
             Divider().overlay(Theme.border)
-            List(entries, id: \.self) { name in
-                HStack(spacing: 8) {
-                    Image(systemName: name.hasSuffix("/") ? "folder.fill" : "doc")
-                        .foregroundStyle(name.hasSuffix("/") ? Theme.accent : Theme.textTertiary)
-                    Text(name).foregroundStyle(Theme.textPrimary)
-                    Spacer()
+            List {
+                // Lên thư mục cha (trừ khi đang ở gốc).
+                if path != "/" {
+                    Button { path = parentPath(); refresh() } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "arrow.up.left.circle").foregroundStyle(Theme.accent)
+                            Text("..").foregroundStyle(Theme.textSecondary)
+                            Spacer()
+                        }
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(Theme.bg)
                 }
-                .listRowBackground(Theme.bg)
-                .contentShape(Rectangle())
-                .contextMenu {
-                    if !name.hasSuffix("/") {
-                        Button("Tải về…") { download(name) }
+                ForEach(entries) { entry in
+                    HStack(spacing: 8) {
+                        Image(systemName: entry.isDirectory ? "folder.fill" : "doc")
+                            .foregroundStyle(entry.isDirectory ? Theme.accent : Theme.textTertiary)
+                        Text(entry.name).foregroundStyle(Theme.textPrimary)
+                        Spacer()
+                    }
+                    .listRowBackground(Theme.bg)
+                    .contentShape(Rectangle())
+                    // Click thư mục → đi vào; click file → (không làm gì, tải về qua menu chuột phải).
+                    .onTapGesture { if entry.isDirectory { path = childPath(entry.name); refresh() } }
+                    .contextMenu {
+                        if !entry.isDirectory { Button("Tải về…") { download(entry.name) } }
                     }
                 }
             }
@@ -614,6 +629,18 @@ struct SFTPPanel: View {
             } catch { status = "Lỗi: \(error)" }
             busy = false
         }
+    }
+
+    /// Đường dẫn con khi vào một thư mục.
+    private func childPath(_ name: String) -> String {
+        if path == "/" { return "/" + name }
+        return path.hasSuffix("/") ? path + name : path + "/" + name
+    }
+
+    /// Đường dẫn cha (lên một cấp).
+    private func parentPath() -> String {
+        let parent = (path as NSString).deletingLastPathComponent
+        return parent.isEmpty ? "/" : parent
     }
 
     private func uploadViaPanel() {

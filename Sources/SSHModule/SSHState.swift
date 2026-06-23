@@ -117,7 +117,7 @@ public final class SSHState: ObservableObject {
 
     // MARK: - SFTP (kéo-thả / duyệt file)
 
-    public func listRemote(_ sessionID: UUID, path: String) async throws -> [String] {
+    public func listRemote(_ sessionID: UUID, path: String) async throws -> [SFTPEntry] {
         guard let s = sessions[sessionID] else { throw SSHSessionError.notConnected }
         return try await s.listDirectory(path).sorted()
     }

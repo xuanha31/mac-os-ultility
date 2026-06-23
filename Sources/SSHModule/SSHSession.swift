@@ -8,6 +8,23 @@ import Core
 
 // SSH-02/03/06/07/08: SSH session qua Citadel 0.12.x
 
+/// Một mục trong thư mục SFTP. `isDirectory` để UI cho click vào duyệt + vẽ icon đúng.
+public struct SFTPEntry: Sendable, Hashable, Identifiable, Comparable {
+    public let name: String
+    public let isDirectory: Bool
+    public var id: String { name }
+
+    public init(name: String, isDirectory: Bool) {
+        self.name = name; self.isDirectory = isDirectory
+    }
+
+    /// Sắp: thư mục trước, rồi theo tên (không phân biệt hoa thường).
+    public static func < (a: SFTPEntry, b: SFTPEntry) -> Bool {
+        if a.isDirectory != b.isDirectory { return a.isDirectory }
+        return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+    }
+}
+
 public enum SSHSessionError: Error, CustomStringConvertible {
     case notConnected
     case hostKeyMismatch(host: String)
@@ -82,12 +99,17 @@ public actor SSHSession {
 
     // MARK: - SSH-07: SFTP
 
-    public func listDirectory(_ path: String) async throws -> [String] {
+    public func listDirectory(_ path: String) async throws -> [SFTPEntry] {
         guard let c = client, state == .connected else { throw SSHSessionError.notConnected }
         let sftp = try await c.openSFTP()
         let names = try await sftp.listDirectory(atPath: path)
-        // SFTPMessage.Name wraps [SFTPPathComponent]; flatten filenames
-        return names.flatMap { $0.components.map(\.filename) }
+        // SFTPMessage.Name wraps [SFTPPathComponent]. longname kiểu `ls -l`: ký tự đầu 'd' = thư mục.
+        // Bỏ "." và ".." (UI tự thêm nút lên cấp trên).
+        return names.flatMap { $0.components }.compactMap { comp in
+            let name = comp.filename
+            guard name != ".", name != ".." else { return nil }
+            return SFTPEntry(name: name, isDirectory: comp.longname.first == "d")
+        }
     }
 
     public func downloadFile(remotePath: String, localURL: URL) async throws {

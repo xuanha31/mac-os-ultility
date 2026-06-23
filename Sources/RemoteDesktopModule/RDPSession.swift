@@ -159,6 +159,10 @@ final class RDPClient: @unchecked Sendable {
     private var dispContext: UnsafeMutablePointer<DispClientContext>?
     private var lastLayoutW = 0
     private var lastLayoutH = 0
+    // Bảo vệ vòng đời context/dispContext: hàm gọi từ main (chuột/phím/resize/render) có thể
+    // chạy trong khi thread nền cleanup() giải phóng context → use-after-free. Khoá để không
+    // dùng con trỏ đã free (cleanup nil hoá + free dưới cùng khoá này).
+    private let ctxLock = NSLock()
 
     /// Gọi từ handler "channel connected" khi kênh cliprdr nối.
     func attachClipboard(_ ctx: UnsafeMutablePointer<CliprdrClientContext>) {
@@ -167,6 +171,7 @@ final class RDPClient: @unchecked Sendable {
 
     /// Gọi từ handler "channel connected" khi kênh disp (Display Control) nối.
     func attachDisp(_ ctx: UnsafeMutablePointer<DispClientContext>) {
+        ctxLock.lock(); defer { ctxLock.unlock() }
         dispContext = ctx
         rdpLog.info("disp attached (dynamic resolution sẵn sàng)")
     }
@@ -174,6 +179,7 @@ final class RDPClient: @unchecked Sendable {
     /// Yêu cầu server đổi độ phân giải desktop khớp kích thước cửa sổ (dynamic-resolution).
     /// Gọi từ main khi cửa sổ resize. Bỏ qua nếu kênh chưa sẵn / kích thước không đổi.
     func sendMonitorLayout(width: Int, height: Int) {
+        ctxLock.lock(); defer { ctxLock.unlock() }
         guard let disp = dispContext else { return }
         var w = max(min(width, 8192), 200)
         var h = max(min(height, 8192), 200)
@@ -219,6 +225,7 @@ final class RDPClient: @unchecked Sendable {
 
     func stop() {
         running = false
+        ctxLock.lock(); defer { ctxLock.unlock() }
         if let ctx = context { freerdp_abort_connect_context(ctx) }
     }
 
@@ -294,6 +301,7 @@ final class RDPClient: @unchecked Sendable {
     }
 
     func renderFrame() {
+        ctxLock.lock(); defer { ctxLock.unlock() }
         guard let ctx = context,
               let gdi = ctx.pointee.gdi, let buf = gdi.pointee.primary_buffer else { return }
         let w = Int(gdi.pointee.width), h = Int(gdi.pointee.height), stride = Int(gdi.pointee.stride)
@@ -340,11 +348,13 @@ final class RDPClient: @unchecked Sendable {
     }
 
     func sendMouse(flags: UInt16, x: UInt16, y: UInt16) {
+        ctxLock.lock(); defer { ctxLock.unlock() }
         guard let ctx = context, let input = ctx.pointee.input else { return }
         _ = freerdp_input_send_mouse_event(input, flags, x, y)
     }
 
     func sendUnicode(_ code: UInt16, down: Bool) {
+        ctxLock.lock(); defer { ctxLock.unlock() }
         guard let ctx = context, let input = ctx.pointee.input else { return }
         _ = freerdp_input_send_unicode_keyboard_event(input, down ? 0 : 0x8000, code) // 0x8000 = KBD_FLAGS_RELEASE
     }
@@ -352,6 +362,7 @@ final class RDPClient: @unchecked Sendable {
     /// Gửi phím theo SCANCODE (PC/AT set 1). Server Linux (gnome-remote-desktop/xrdp)
     /// thường bỏ qua unicode keyboard nên dùng scancode mới gõ được.
     func sendScancode(_ rdpScancode: UInt16, down: Bool) {
+        ctxLock.lock(); defer { ctxLock.unlock() }
         guard let ctx = context, let input = ctx.pointee.input else { return }
         _ = freerdp_input_send_keyboard_event_ex(input, down, false, UInt32(rdpScancode))
     }
@@ -359,11 +370,18 @@ final class RDPClient: @unchecked Sendable {
     private func cleanup() {
         clipboard?.stop()
         clipboard = nil
-        if let ctx = context {
+        // Nil hoá con trỏ DƯỚI khoá để hàm trên main (chuột/phím/resize/render) đang/đợi khoá
+        // không dùng context đã free. Sau khi nil + mở khoá mới free (an toàn vì không ai
+        // còn lấy được con trỏ hợp lệ).
+        ctxLock.lock()
+        let ctx = context
+        context = nil
+        dispContext = nil
+        ctxLock.unlock()
+        if let ctx {
             RDPClientRegistry.shared.remove(UnsafeMutableRawPointer(ctx))
             freerdp_client_context_free(ctx)
         }
-        context = nil
     }
 }
 

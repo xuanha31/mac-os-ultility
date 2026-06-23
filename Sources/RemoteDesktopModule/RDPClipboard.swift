@@ -10,6 +10,13 @@ private let clipLog = Log.make("remote")
 private let kCF_UNICODETEXT: UInt32 = 13   // text UTF-16LE (kết NUL)
 private let kCF_DIB: UInt32 = 8            // ảnh DIB (BITMAPINFOHEADER + pixel, không file header)
 
+// File clipboard (MS-RDPECLIP): format "FileGroupDescriptorW" (đặt tên dài) + PDU FileContents.
+private let kFileGroupName = "FileGroupDescriptorW"
+private let kFileGroupId: UInt32 = 49562   // id ta tự gán khi quảng bá (peer ánh xạ theo TÊN)
+private let kFD_FILESIZE_ATTRIBUTES: UInt32 = 0x44   // FD_FILESIZE(0x40) | FD_ATTRIBUTES(0x04)
+private let kFILE_ATTRIBUTE_ARCHIVE: UInt32 = 0x20
+private let kFILE_ATTRIBUTE_DIRECTORY: UInt32 = 0x10
+
 /// Cầu nối clipboard RDP (kênh cliprdr) ↔ NSPasteboard của macOS — TEXT 2 chiều (Phase A).
 /// FreeRDP chỉ cấp kênh; phần đồng bộ dữ liệu do lớp này tự lo.
 /// Callback cliprdr chạy trên thread kênh (nền); ghi NSPasteboard đẩy về main.
@@ -23,6 +30,7 @@ final class RDPClipboard: @unchecked Sendable {
     private var lastText: String?
     private var lastImage: Data?          // DIB ảnh đã đồng bộ gần nhất (chống lặp ảnh)
     private var pendingFormat: UInt32 = 0 // format ta vừa xin từ server (để giải mã response đúng)
+    private var providedFiles: [URL] = [] // snapshot file URL ta đang cấp cho remote (theo listIndex)
 
     init(_ ctx: UnsafeMutablePointer<CliprdrClientContext>) {
         self.cliprdr = ctx
@@ -31,6 +39,7 @@ final class RDPClipboard: @unchecked Sendable {
         ctx.pointee.ServerFormatList = rdpCliprdrServerFormatList
         ctx.pointee.ServerFormatDataRequest = rdpCliprdrServerFormatDataRequest
         ctx.pointee.ServerFormatDataResponse = rdpCliprdrServerFormatDataResponse
+        ctx.pointee.ServerFileContentsRequest = rdpCliprdrServerFileContentsRequest
         clipLog.info("cliprdr attached")
     }
 
@@ -121,6 +130,9 @@ final class RDPClipboard: @unchecked Sendable {
             payload = bytes
         } else if fmt == kCF_DIB, let dib = dibFromPasteboardImage() {
             payload = [UInt8](dib)
+        } else if fmt == kFileGroupId {
+            providedFiles = pasteboardFileURLs()   // snapshot để map listIndex cho FileContents
+            if !providedFiles.isEmpty { payload = [UInt8](buildFileGroupDescriptor(providedFiles)) }
         }
 
         var resp = CLIPRDR_FORMAT_DATA_RESPONSE()
@@ -176,6 +188,83 @@ final class RDPClipboard: @unchecked Sendable {
         d.append(UInt8((v >> 16) & 0xFF)); d.append(UInt8((v >> 24) & 0xFF))
     }
 
+    // MARK: - File: Mac → remote
+
+    private func fileSize(_ url: URL) -> UInt64 {
+        (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize).flatMap { UInt64($0) } ?? 0
+    }
+
+    /// Dựng FILEGROUPDESCRIPTORW: cItems(4) + N × FILEDESCRIPTORW(592 byte).
+    private func buildFileGroupDescriptor(_ urls: [URL]) -> Data {
+        var d = Data()
+        appendLE32(&d, UInt32(urls.count))
+        for url in urls {
+            var fd = [UInt8](repeating: 0, count: 592)
+            func put32(_ off: Int, _ v: UInt32) {
+                fd[off] = UInt8(v & 0xFF); fd[off+1] = UInt8((v >> 8) & 0xFF)
+                fd[off+2] = UInt8((v >> 16) & 0xFF); fd[off+3] = UInt8((v >> 24) & 0xFF)
+            }
+            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
+            let size = fileSize(url)
+            put32(0, kFD_FILESIZE_ATTRIBUTES)                                   // dwFlags
+            put32(36, isDir == true ? kFILE_ATTRIBUTE_DIRECTORY : kFILE_ATTRIBUTE_ARCHIVE) // dwFileAttributes
+            put32(64, UInt32(size >> 32))                                       // nFileSizeHigh
+            put32(68, UInt32(size & 0xFFFF_FFFF))                               // nFileSizeLow
+            var off = 72                                                        // cFileName[260] UTF-16
+            for u in url.lastPathComponent.utf16.prefix(259) {
+                fd[off] = UInt8(u & 0xFF); fd[off+1] = UInt8(u >> 8); off += 2
+            }
+            d.append(contentsOf: fd)
+        }
+        return d
+    }
+
+    /// Remote xin nội dung file (SIZE hoặc RANGE) → đọc từ file Mac và trả về.
+    func onServerFileContentsRequest(_ req: UnsafePointer<CLIPRDR_FILE_CONTENTS_REQUEST>) {
+        let r = req.pointee
+        let idx = Int(r.listIndex)
+        guard idx >= 0, idx < providedFiles.count else { sendFileContents(r.streamId, nil); return }
+        let url = providedFiles[idx]
+
+        if (r.dwFlags & UInt32(FILECONTENTS_SIZE)) != 0 {
+            let size = fileSize(url)
+            var bytes = [UInt8]()
+            for i in 0..<8 { bytes.append(UInt8((size >> (8 * i)) & 0xFF)) }   // UInt64 LE
+            sendFileContents(r.streamId, bytes)
+        } else if (r.dwFlags & UInt32(FILECONTENTS_RANGE)) != 0 {
+            let pos = UInt64(r.nPositionLow) | (UInt64(r.nPositionHigh) << 32)
+            sendFileContents(r.streamId, readFileRange(url, pos, Int(r.cbRequested)))
+        } else {
+            sendFileContents(r.streamId, nil)
+        }
+    }
+
+    private func readFileRange(_ url: URL, _ pos: UInt64, _ count: Int) -> [UInt8] {
+        guard count > 0, let fh = try? FileHandle(forReadingFrom: url) else { return [] }
+        defer { try? fh.close() }
+        try? fh.seek(toOffset: pos)
+        let data = (try? fh.read(upToCount: count)) ?? Data()
+        return [UInt8](data)
+    }
+
+    /// Gửi FileContentsResponse. bytes == nil → báo lỗi (CB_RESPONSE_FAIL).
+    private func sendFileContents(_ streamId: UInt32, _ bytes: [UInt8]?) {
+        var resp = CLIPRDR_FILE_CONTENTS_RESPONSE()
+        resp.streamId = streamId
+        guard let bytes else {
+            resp.common.msgFlags = UInt16(CB_RESPONSE_FAIL)
+            _ = cliprdr.pointee.ClientFileContentsResponse?(cliprdr, &resp)
+            return
+        }
+        resp.common.msgFlags = UInt16(CB_RESPONSE_OK)
+        resp.common.dataLen = UInt32(4 + bytes.count)   // streamId(4) + data
+        resp.cbRequested = UInt32(bytes.count)
+        bytes.withUnsafeBufferPointer { p in
+            resp.requestedData = p.baseAddress
+            _ = cliprdr.pointee.ClientFileContentsResponse?(cliprdr, &resp)
+        }
+    }
+
     // MARK: - Helpers
 
     private func sendCapabilities() {
@@ -183,7 +272,9 @@ final class RDPClipboard: @unchecked Sendable {
         general.capabilitySetType = UInt16(CB_CAPSTYPE_GENERAL)
         general.capabilitySetLength = UInt16(CB_CAPSTYPE_GENERAL_LEN)
         general.version = UInt32(CB_CAPS_VERSION_2)
+        // Long format names (cho "FileGroupDescriptorW") + bật luồng file clipboard.
         general.generalFlags = UInt32(CB_USE_LONG_FORMAT_NAMES)
+            | UInt32(CB_STREAM_FILECLIP_ENABLED) | UInt32(CB_FILECLIP_NO_FILE_PATHS)
         withUnsafeMutablePointer(to: &general) { gp in
             var caps = CLIPRDR_CAPABILITIES()
             caps.cCapabilitiesSets = 1
@@ -192,15 +283,25 @@ final class RDPClipboard: @unchecked Sendable {
         }
     }
 
-    /// Quảng bá các format hiện có trên NSPasteboard (text và/hoặc ảnh).
+    /// Quảng bá các format hiện có trên NSPasteboard (text, ảnh, file).
     func advertiseLocalClipboard() {
         let pb = NSPasteboard.general
-        var ids: [UInt32] = []
-        if pb.string(forType: .string) != nil { ids.append(kCF_UNICODETEXT) }
-        if pb.data(forType: .tiff) != nil || pb.data(forType: .png) != nil { ids.append(kCF_DIB) }
+        var items: [(UInt32, String?)] = []
+        if pb.string(forType: .string) != nil { items.append((kCF_UNICODETEXT, nil)) }
+        if pb.data(forType: .tiff) != nil || pb.data(forType: .png) != nil { items.append((kCF_DIB, nil)) }
+        if !pasteboardFileURLs().isEmpty { items.append((kFileGroupId, kFileGroupName)) }
+        sendFormatList(items)
+    }
 
-        var cFormats = ids.map { id -> CLIPRDR_FORMAT in
-            var f = CLIPRDR_FORMAT(); f.formatId = id; f.formatName = nil; return f
+    /// Gửi format list. Mỗi item có id + tên tuỳ chọn (tên cần cho format dài như file group).
+    private func sendFormatList(_ items: [(UInt32, String?)]) {
+        var names: [UnsafeMutablePointer<CChar>?] = []
+        defer { for p in names { free(p) } }
+        var cFormats = items.map { item -> CLIPRDR_FORMAT in
+            var f = CLIPRDR_FORMAT()
+            f.formatId = item.0
+            if let n = item.1 { let p = strdup(n); names.append(p); f.formatName = p } else { f.formatName = nil }
+            return f
         }
         cFormats.withUnsafeMutableBufferPointer { buf in
             var list = CLIPRDR_FORMAT_LIST()
@@ -208,6 +309,12 @@ final class RDPClipboard: @unchecked Sendable {
             list.formats = buf.baseAddress   // nil khi rỗng → numFormats=0
             _ = cliprdr.pointee.ClientFormatList?(cliprdr, &list)
         }
+    }
+
+    private func pasteboardFileURLs() -> [URL] {
+        let opts: [NSPasteboard.ReadingOptionKey: Any] = [.urlReadingFileURLsOnly: true]
+        let urls = NSPasteboard.general.readObjects(forClasses: [NSURL.self], options: opts) as? [URL] ?? []
+        return urls.filter { $0.isFileURL }
     }
 
     private func startPolling() {
@@ -264,6 +371,11 @@ private func rdpCliprdrServerFormatDataRequest(_ ctx: UnsafeMutablePointer<Clipr
 private func rdpCliprdrServerFormatDataResponse(_ ctx: UnsafeMutablePointer<CliprdrClientContext>?,
                                                 _ resp: UnsafePointer<CLIPRDR_FORMAT_DATA_RESPONSE>?) -> UInt32 {
     if let resp { clip(ctx)?.onServerFormatDataResponse(resp) }
+    return 0
+}
+private func rdpCliprdrServerFileContentsRequest(_ ctx: UnsafeMutablePointer<CliprdrClientContext>?,
+                                                 _ req: UnsafePointer<CLIPRDR_FILE_CONTENTS_REQUEST>?) -> UInt32 {
+    if let req { clip(ctx)?.onServerFileContentsRequest(req) }
     return 0
 }
 #endif

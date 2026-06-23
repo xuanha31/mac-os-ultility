@@ -53,7 +53,7 @@ private func rdpClientNew(_ instance: UnsafeMutablePointer<freerdp>?,
     // Thêm handler riêng để bắt kênh cliprdr (clipboard) → gắn cầu nối NSPasteboard.
     if let context {
         cfreerdp_subscribe_channel_handlers(context)
-        cfreerdp_subscribe_channel_connected(context, rdpCliprdrChannelConnected)
+        cfreerdp_subscribe_channel_connected(context, rdpChannelConnected)
     }
     return true
 }
@@ -156,10 +156,39 @@ final class RDPClient: @unchecked Sendable {
     private var running = false
     private var framesRendered = 0
     private var clipboard: RDPClipboard?
+    private var dispContext: UnsafeMutablePointer<DispClientContext>?
+    private var lastLayoutW = 0
+    private var lastLayoutH = 0
 
     /// Gọi từ handler "channel connected" khi kênh cliprdr nối.
     func attachClipboard(_ ctx: UnsafeMutablePointer<CliprdrClientContext>) {
         clipboard = RDPClipboard(ctx)
+    }
+
+    /// Gọi từ handler "channel connected" khi kênh disp (Display Control) nối.
+    func attachDisp(_ ctx: UnsafeMutablePointer<DispClientContext>) {
+        dispContext = ctx
+        rdpLog.info("disp attached (dynamic resolution sẵn sàng)")
+    }
+
+    /// Yêu cầu server đổi độ phân giải desktop khớp kích thước cửa sổ (dynamic-resolution).
+    /// Gọi từ main khi cửa sổ resize. Bỏ qua nếu kênh chưa sẵn / kích thước không đổi.
+    func sendMonitorLayout(width: Int, height: Int) {
+        guard let disp = dispContext else { return }
+        var w = max(min(width, 8192), 200)
+        var h = max(min(height, 8192), 200)
+        if w % 2 != 0 { w -= 1 }
+        if h % 2 != 0 { h -= 1 }
+        guard w != lastLayoutW || h != lastLayoutH else { return }
+        lastLayoutW = w; lastLayoutH = h
+        var mon = DISPLAY_CONTROL_MONITOR_LAYOUT()
+        mon.Flags = UInt32(DISPLAY_CONTROL_MONITOR_PRIMARY)
+        mon.Left = 0; mon.Top = 0
+        mon.Width = UInt32(w); mon.Height = UInt32(h)
+        mon.Orientation = 0
+        mon.DesktopScaleFactor = 100
+        mon.DeviceScaleFactor = 100
+        _ = disp.pointee.SendMonitorLayout?(disp, 1, &mon)
     }
 
     init(host: String, port: UInt16, username: String, password: String, domain: String,
@@ -425,6 +454,36 @@ final class RDPFramebufferNSView: NSView {
                                        owner: self))
         super.updateTrackingAreas()
     }
+
+    // MARK: - Resize (dynamic resolution)
+
+    /// Báo kích thước PIXEL mới (debounce) để session gửi monitor layout cho server.
+    var onResize: ((Int, Int) -> Void)?
+    private var resizeWork: DispatchWorkItem?
+
+    override func setFrameSize(_ newSize: NSSize) {
+        super.setFrameSize(newSize)
+        scheduleResizeReport()
+    }
+
+    override func viewDidEndLiveResize() {
+        super.viewDidEndLiveResize()
+        scheduleResizeReport()
+    }
+
+    private func scheduleResizeReport() {
+        guard onResize != nil, bounds.width > 1, bounds.height > 1 else { return }
+        resizeWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self else { return }
+            // Kích thước pixel thực (Retina) → desktop khớp 1:1, nét, không kéo căng.
+            let px = self.convertToBacking(NSRect(origin: .zero, size: self.bounds.size)).size
+            let w = Int(px.width.rounded()), h = Int(px.height.rounded())
+            if w > 1, h > 1 { self.onResize?(w, h) }
+        }
+        resizeWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+    }
 }
 
 // MARK: - Bảng phím
@@ -490,6 +549,11 @@ final class RDPSession: RemoteSession {
         view.wantsLayer = true
         view.layer?.contentsGravity = .resize   // kéo đầy khung (khớp cách map toạ độ chuột)
         view.layer?.backgroundColor = NSColor.black.cgColor
+        // Dynamic resolution chỉ cho chế độ Auto: desktop remote tự khớp kích thước cửa sổ
+        // (1:1, nét, không kéo căng). Preset cố định thì giữ nguyên độ phân giải đã chọn.
+        if (profile.resolution ?? .auto) == .auto {
+            view.onResize = { [weak client] w, h in client?.sendMonitorLayout(width: w, height: h) }
+        }
         view.onMouse = { [weak client] f, x, y in client?.sendMouse(flags: f, x: x, y: y) }
         view.onKey   = { [weak client] macKeyCode, down in
             guard let rdp = macKeyToRDPScancode[macKeyCode] else { return }

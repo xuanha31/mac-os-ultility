@@ -20,6 +20,8 @@
 #include <freerdp/channels/channels.h>
 #include <freerdp/channels/cliprdr.h>
 #include <freerdp/client/cliprdr.h>
+#include <freerdp/channels/disp.h>
+#include <freerdp/client/disp.h>
 
 /* PIXEL_FORMAT_BGRA32 là macro hàm → không import sang Swift được.
  * Bọc thành hàm inline để Swift lấy giá trị hằng. */

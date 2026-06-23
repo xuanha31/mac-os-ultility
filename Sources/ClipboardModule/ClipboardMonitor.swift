@@ -8,7 +8,6 @@ public final class ClipboardMonitor: @unchecked Sendable {
 
     private var lastChangeCount: Int = NSPasteboard.general.changeCount
     private var timer: DispatchSourceTimer?
-    private let queue = DispatchQueue(label: "com.macutil.clipboard", qos: .utility)
     private let interval: TimeInterval
 
     public init(interval: TimeInterval = 0.5) {
@@ -17,7 +16,9 @@ public final class ClipboardMonitor: @unchecked Sendable {
 
     public func start() {
         guard timer == nil else { return }
-        let t = DispatchSource.makeTimerSource(queue: queue)
+        // NSPasteboard KHÔNG thread-safe. Poll trên MAIN để không đua với chỗ khác cũng đọc
+        // pasteboard (vd RDPClipboard khi remote) → tránh crash _updateTypeCacheIfNeeded.
+        let t = DispatchSource.makeTimerSource(queue: .main)
         t.schedule(deadline: .now() + interval, repeating: interval)
         t.setEventHandler { [weak self] in self?.poll() }
         timer = t

@@ -139,20 +139,24 @@ final class RDPClipboard: @unchecked Sendable {
 
     // MARK: - Mac → Remote
 
-    /// Remote xin clipboard của ta để paste → trả text (UTF-16LE) hoặc ảnh (DIB).
+    /// Remote xin clipboard của ta để paste → trả text (UTF-16LE) hoặc ảnh (DIB) hoặc file.
     func onServerFormatDataRequest(_ req: UnsafePointer<CLIPRDR_FORMAT_DATA_REQUEST>) {
         let fmt = req.pointee.requestedFormatId
-        var payload: [UInt8]?
-        if fmt == kCF_UNICODETEXT, let s = NSPasteboard.general.string(forType: .string) {
-            var bytes = [UInt8](); bytes.reserveCapacity(s.utf16.count * 2 + 2)
-            for u in s.utf16 { bytes.append(UInt8(u & 0xFF)); bytes.append(UInt8(u >> 8)) }
-            bytes.append(0); bytes.append(0)   // NUL UTF-16
-            payload = bytes
-        } else if fmt == kCF_DIB, let dib = dibFromPasteboardImage() {
-            payload = [UInt8](dib)
-        } else if fmt == kFileGroupId {
-            providedFiles = pasteboardFileURLs()   // snapshot để map listIndex cho FileContents
-            if !providedFiles.isEmpty { payload = [UInt8](buildFileGroupDescriptor(providedFiles)) }
+        // Đọc pasteboard PHẢI trên MAIN (không thread-safe) → lấy payload qua main.sync rồi gửi
+        // response trên thread kênh. Callback này luôn chạy ở thread kênh nên sync an toàn.
+        let payload: [UInt8]? = DispatchQueue.main.sync {
+            if fmt == kCF_UNICODETEXT, let s = NSPasteboard.general.string(forType: .string) {
+                var bytes = [UInt8](); bytes.reserveCapacity(s.utf16.count * 2 + 2)
+                for u in s.utf16 { bytes.append(UInt8(u & 0xFF)); bytes.append(UInt8(u >> 8)) }
+                bytes.append(0); bytes.append(0)   // NUL UTF-16
+                return bytes
+            } else if fmt == kCF_DIB, let dib = dibFromPasteboardImage() {
+                return [UInt8](dib)
+            } else if fmt == kFileGroupId {
+                providedFiles = pasteboardFileURLs()   // snapshot để map listIndex cho FileContents
+                if !providedFiles.isEmpty { return [UInt8](buildFileGroupDescriptor(providedFiles)) }
+            }
+            return nil
         }
 
         var resp = CLIPRDR_FORMAT_DATA_RESPONSE()
@@ -408,13 +412,17 @@ final class RDPClipboard: @unchecked Sendable {
     }
 
     /// Quảng bá các format hiện có trên NSPasteboard (text, ảnh, file).
+    /// NSPasteboard chỉ được chạm trên MAIN (không thread-safe) → tránh đua với ClipboardMonitor.
     func advertiseLocalClipboard() {
-        let pb = NSPasteboard.general
-        var items: [(UInt32, String?)] = []
-        if pb.string(forType: .string) != nil { items.append((kCF_UNICODETEXT, nil)) }
-        if pb.data(forType: .tiff) != nil || pb.data(forType: .png) != nil { items.append((kCF_DIB, nil)) }
-        if !pasteboardFileURLs().isEmpty { items.append((kFileGroupId, kFileGroupName)) }
-        sendFormatList(items)
+        let build = { [self] in
+            let pb = NSPasteboard.general
+            var items: [(UInt32, String?)] = []
+            if pb.string(forType: .string) != nil { items.append((kCF_UNICODETEXT, nil)) }
+            if pb.data(forType: .tiff) != nil || pb.data(forType: .png) != nil { items.append((kCF_DIB, nil)) }
+            if !pasteboardFileURLs().isEmpty { items.append((kFileGroupId, kFileGroupName)) }
+            sendFormatList(items)
+        }
+        if Thread.isMainThread { build() } else { DispatchQueue.main.async(execute: build) }
     }
 
     /// Gửi format list. Mỗi item có id + tên tuỳ chọn (tên cần cho format dài như file group).

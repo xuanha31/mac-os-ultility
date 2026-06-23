@@ -81,6 +81,10 @@ GNOME có **2 chế độ RDP tách biệt** (Settings → System → Remote Des
 
 **Bàn phím:** app gửi theo *scancode* (PC/AT set 1) + phím mở rộng (mũi tên, Home/End…) nên gõ được cả trên server Linux (gnome-remote-desktop/xrdp) lẫn Windows.
 
+**Độ phân giải & hiển thị:** render bằng **IOSurface** (mượt ở 2.5K/3K). Profile có ô chọn độ phân giải: **Auto** = bám kích thước cửa sổ realtime (dynamic-resolution, 1:1 sắc nét); hoặc preset cố định (1920×1080 / 2560×1440 / 3840×2160). Tách cửa sổ resize/fullscreen được.
+
+**Clipboard 2 chiều** (kênh cliprdr): **text** + **ảnh** (CF_DIB) + **file** (FileGroupDescriptor) đồng bộ Mac ↔ remote. Lưu ý: clipboard chỉ tới **Ubuntu host**; vào **Windows VM (KVM/SPICE)** cần `spice-vdagent` (text/ảnh), file thì dùng shared folder/SPICE drag-drop.
+
 **Khắc phục màn hình đen/trắng:** đã bật kênh **GFX** + đổ vào `gdi.primary_buffer`. Nếu Remote Login trên Ubuntu 26.04 vẫn đen (lỗi đã báo phía gnome-remote-desktop), thử **Desktop Sharing** để khoanh vùng server vs client.
 
 ## Tài liệu

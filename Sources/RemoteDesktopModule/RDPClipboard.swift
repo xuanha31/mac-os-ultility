@@ -32,6 +32,16 @@ final class RDPClipboard: @unchecked Sendable {
     private var pendingFormat: UInt32 = 0 // format ta vừa xin từ server (để giải mã response đúng)
     private var providedFiles: [URL] = [] // snapshot file URL ta đang cấp cho remote (theo listIndex)
 
+    // Nhận file (remote → Mac): id file group do server quảng bá + máy trạng thái kéo tuần tự.
+    private var serverFileGroupId: UInt32 = 0
+    private var inFiles: [(String, UInt64)] = []
+    private var inDir: URL?
+    private var inIndex = 0
+    private var inOffset: UInt64 = 0
+    private var inHandle: FileHandle?
+    private var inURLs: [URL] = []
+    private var streamCounter: UInt32 = 0
+
     init(_ ctx: UnsafeMutablePointer<CliprdrClientContext>) {
         self.cliprdr = ctx
         ctx.pointee.custom = Unmanaged.passUnretained(self).toOpaque()
@@ -40,6 +50,7 @@ final class RDPClipboard: @unchecked Sendable {
         ctx.pointee.ServerFormatDataRequest = rdpCliprdrServerFormatDataRequest
         ctx.pointee.ServerFormatDataResponse = rdpCliprdrServerFormatDataResponse
         ctx.pointee.ServerFileContentsRequest = rdpCliprdrServerFileContentsRequest
+        ctx.pointee.ServerFileContentsResponse = rdpCliprdrServerFileContentsResponse
         clipLog.info("cliprdr attached")
     }
 
@@ -57,18 +68,22 @@ final class RDPClipboard: @unchecked Sendable {
         startPolling()
     }
 
-    /// Remote đổi clipboard → ưu tiên xin text, không thì xin ảnh (DIB), để bỏ vào NSPasteboard.
+    /// Remote đổi clipboard → ưu tiên FILE > ẢNH > TEXT (đúng cái vừa copy), xin dữ liệu về.
     func onServerFormatList(_ list: UnsafePointer<CLIPRDR_FORMAT_LIST>) {
         let n = Int(list.pointee.numFormats)
-        var hasText = false, hasImage = false
+        var hasText = false, hasImage = false, fileId: UInt32?
         if let formats = list.pointee.formats {
             for i in 0..<n {
-                if formats[i].formatId == kCF_UNICODETEXT { hasText = true }
-                if formats[i].formatId == kCF_DIB { hasImage = true }
+                let id = formats[i].formatId
+                if id == kCF_UNICODETEXT { hasText = true }
+                if id == kCF_DIB { hasImage = true }
+                if let np = formats[i].formatName, String(cString: np) == kFileGroupName { fileId = id }
             }
         }
+        serverFileGroupId = fileId ?? 0
         let want: UInt32
-        if hasText { want = kCF_UNICODETEXT } else if hasImage { want = kCF_DIB } else { return }
+        if let fid = fileId { want = fid } else if hasImage { want = kCF_DIB }
+        else if hasText { want = kCF_UNICODETEXT } else { return }
         pendingFormat = want
         var req = CLIPRDR_FORMAT_DATA_REQUEST()
         req.requestedFormatId = want
@@ -81,6 +96,11 @@ final class RDPClipboard: @unchecked Sendable {
               let data = resp.pointee.requestedFormatData else { return }
         let len = Int(resp.pointee.common.dataLen)
         guard len > 0 else { return }
+
+        if serverFileGroupId != 0, pendingFormat == serverFileGroupId {
+            startReceivingFiles(parseFileGroupDescriptor(Data(bytes: data, count: len)))
+            return
+        }
 
         if pendingFormat == kCF_DIB {
             let dib = Data(bytes: data, count: len)
@@ -265,6 +285,110 @@ final class RDPClipboard: @unchecked Sendable {
         }
     }
 
+    // MARK: - File: remote → Mac (kéo tuần tự, 1 yêu cầu/lúc)
+
+    /// Đọc FILEGROUPDESCRIPTORW → [(tên, kích thước)].
+    private func parseFileGroupDescriptor(_ d: Data) -> [(String, UInt64)] {
+        guard d.count >= 4 else { return [] }
+        func u32(_ o: Int) -> UInt64 {
+            UInt64(d[d.startIndex+o]) | (UInt64(d[d.startIndex+o+1]) << 8)
+                | (UInt64(d[d.startIndex+o+2]) << 16) | (UInt64(d[d.startIndex+o+3]) << 24)
+        }
+        let count = Int(u32(0))
+        var out: [(String, UInt64)] = []
+        var base = 4
+        for _ in 0..<count {
+            guard base + 592 <= d.count else { break }
+            let size = (u32(base + 64) << 32) | u32(base + 68)            // high<<32 | low
+            var units: [UInt16] = []
+            var o = base + 72
+            for _ in 0..<260 {
+                let u = UInt16(d[d.startIndex+o]) | (UInt16(d[d.startIndex+o+1]) << 8)
+                if u == 0 { break }
+                units.append(u); o += 2
+            }
+            out.append((String(decoding: units, as: UTF16.self), size))
+            base += 592
+        }
+        return out
+    }
+
+    private func startReceivingFiles(_ files: [(String, UInt64)]) {
+        guard !files.isEmpty, inHandle == nil else { return }   // bỏ qua nếu đang nhận dở
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macutil-rdp-" + UUID().uuidString)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        inDir = dir; inFiles = files; inURLs = []; inIndex = 0; inOffset = 0
+        openCurrentIncomingFile()
+        requestNextChunk()
+    }
+
+    private func openCurrentIncomingFile() {
+        guard let dir = inDir, inIndex < inFiles.count else { return }
+        // Chỉ lấy tên file (chống path traversal từ remote).
+        let raw = (inFiles[inIndex].0 as NSString).lastPathComponent
+        let name = raw.isEmpty ? "file-\(inIndex)" : raw
+        let url = dir.appendingPathComponent(name)
+        FileManager.default.createFile(atPath: url.path, contents: nil)
+        inHandle = try? FileHandle(forWritingTo: url)
+        inURLs.append(url)
+        inOffset = 0
+    }
+
+    private func requestNextChunk() {
+        while inIndex < inFiles.count, inOffset >= inFiles[inIndex].1 {
+            try? inHandle?.close(); inHandle = nil       // file hiện tại xong
+            inIndex += 1
+            if inIndex < inFiles.count { openCurrentIncomingFile() }
+        }
+        guard inIndex < inFiles.count else { finishReceiving(); return }
+        let chunk = UInt32(min(inFiles[inIndex].1 - inOffset, 1 << 20))   // ≤1MB/lần
+        streamCounter += 1
+        var req = CLIPRDR_FILE_CONTENTS_REQUEST()
+        req.streamId = streamCounter
+        req.listIndex = UInt32(inIndex)
+        req.dwFlags = UInt32(FILECONTENTS_RANGE)
+        req.nPositionLow = UInt32(inOffset & 0xFFFF_FFFF)
+        req.nPositionHigh = UInt32(inOffset >> 32)
+        req.cbRequested = chunk
+        _ = cliprdr.pointee.ClientFileContentsRequest?(cliprdr, &req)
+    }
+
+    /// Server trả 1 chunk nội dung file → ghi vào file tạm rồi xin chunk tiếp.
+    func onServerFileContentsResponse(_ resp: UnsafePointer<CLIPRDR_FILE_CONTENTS_RESPONSE>) {
+        guard inHandle != nil else { return }
+        let r = resp.pointee
+        guard (r.common.msgFlags & UInt16(CB_RESPONSE_OK)) != 0, let data = r.requestedData else {
+            abortReceiving(); return
+        }
+        let len = Int(r.cbRequested)
+        if len > 0 {
+            try? inHandle?.write(contentsOf: Data(bytes: data, count: len))
+            inOffset += UInt64(len)
+        } else {
+            inOffset = inFiles[inIndex].1   // không còn dữ liệu → coi file xong
+        }
+        requestNextChunk()
+    }
+
+    private func finishReceiving() {
+        try? inHandle?.close(); inHandle = nil
+        let urls = inURLs
+        inFiles = []; inURLs = []
+        guard !urls.isEmpty else { return }
+        DispatchQueue.main.async {
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.writeObjects(urls.map { $0 as NSURL })
+            self.lastChangeCount = pb.changeCount
+        }
+    }
+
+    private func abortReceiving() {
+        try? inHandle?.close(); inHandle = nil
+        inFiles = []; inURLs = []
+    }
+
     // MARK: - Helpers
 
     private func sendCapabilities() {
@@ -376,6 +500,11 @@ private func rdpCliprdrServerFormatDataResponse(_ ctx: UnsafeMutablePointer<Clip
 private func rdpCliprdrServerFileContentsRequest(_ ctx: UnsafeMutablePointer<CliprdrClientContext>?,
                                                  _ req: UnsafePointer<CLIPRDR_FILE_CONTENTS_REQUEST>?) -> UInt32 {
     if let req { clip(ctx)?.onServerFileContentsRequest(req) }
+    return 0
+}
+private func rdpCliprdrServerFileContentsResponse(_ ctx: UnsafeMutablePointer<CliprdrClientContext>?,
+                                                  _ resp: UnsafePointer<CLIPRDR_FILE_CONTENTS_RESPONSE>?) -> UInt32 {
+    if let resp { clip(ctx)?.onServerFileContentsResponse(resp) }
     return 0
 }
 #endif

@@ -21,14 +21,48 @@ final class KeyRemapViewModel: ObservableObject {
 
     private let remapper = KeyRemapper()
     private let persistence = LoginPersistence()
+    private let defaults = UserDefaults.standard
+    private let kMappingsKey = "keyRemap.customMappings.v1"   // Data([[UInt64]]) — cặp from/to usage
+    private let kActiveKey = "keyRemap.active.v1"             // "none" | "preset" | "custom"
 
     init() {
         persistAcrossReboot = persistence.isInstalled
+        loadAndReapply()
     }
+
+    /// Nạp remap đã lưu và ÁP LẠI. hidutil --set chỉ theo phiên đăng nhập, nên phải áp lại
+    /// mỗi lần mở app thì phím mới được giữ (trước đây không lưu → mở lại là mất).
+    private func loadAndReapply() {
+        if let data = defaults.data(forKey: kMappingsKey),
+           let pairs = try? JSONDecoder().decode([[UInt64]].self, from: data) {
+            let byUsage = Dictionary(KeyRemapper.HIDKey.all.map { ($0.usage, $0) },
+                                     uniquingKeysWith: { a, _ in a })
+            customMappings = pairs.compactMap { p in
+                guard p.count == 2, let f = byUsage[p[0]], let t = byUsage[p[1]] else { return nil }
+                return (from: f, to: t)
+            }
+        }
+        switch defaults.string(forKey: kActiveKey) {
+        case "custom" where !customMappings.isEmpty:
+            _ = try? remapper.applyCustomMapping(customMappings.map { ($0.from, $0.to) })
+        case "preset":
+            try? remapper.swapCommandShift()
+        default:
+            break
+        }
+    }
+
+    private func saveMappings() {
+        let pairs = customMappings.map { [$0.from.usage, $0.to.usage] }
+        if let data = try? JSONEncoder().encode(pairs) { defaults.set(data, forKey: kMappingsKey) }
+    }
+
+    private func setActive(_ value: String) { defaults.set(value, forKey: kActiveKey) }
 
     func swap() {
         do {
             try remapper.swapCommandShift()
+            setActive("preset")
             setStatus("Đã đổi Command ↔ Shift cho phiên hiện tại.", error: false)
             if persistAcrossReboot { try? persistence.install(hidutilJSON: KeyRemapper.swapCommandShiftJSON) }
         } catch {
@@ -42,6 +76,8 @@ final class KeyRemapViewModel: ObservableObject {
             try? persistence.remove()
             persistAcrossReboot = false
             customMappings = []
+            saveMappings()
+            setActive("none")
             setStatus("Đã khôi phục phím mặc định.", error: false)
         } catch {
             setStatus("Lỗi: \(error)", error: true)
@@ -81,6 +117,8 @@ final class KeyRemapViewModel: ObservableObject {
         if customMappings.isEmpty {
             // Không còn remap tùy chỉnh → xoá mapping đang áp dụng.
             try? remapper.reset()
+            saveMappings()
+            setActive("none")
             setStatus("Đã xoá remap tùy chỉnh.", error: false)
         } else {
             applyCustom()
@@ -149,6 +187,8 @@ final class KeyRemapViewModel: ObservableObject {
         guard !customMappings.isEmpty else { return }
         do {
             try remapper.applyCustomMapping(customMappings.map { ($0.from, $0.to) })
+            saveMappings()
+            setActive("custom")
             setStatus("Đã áp dụng \(customMappings.count) remap tùy chỉnh.", error: false)
             if persistAcrossReboot {
                 let json = KeyRemapper.buildMappingJSON(customMappings.map { ($0.from, $0.to) })

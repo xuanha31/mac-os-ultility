@@ -24,7 +24,7 @@ struct RemoteDesktopView: View {
 
     private func openAddProfileWindow() {
         let remoteState = state
-        presentInWindow(title: "Thêm host Remote", width: 440, height: 360) { dismiss in
+        presentInWindow(title: "Thêm host Remote", width: 440, height: 480) { dismiss in
             AddRemoteProfileSheet(store: remoteState.store) { profile, pwd in
                 remoteState.addProfile(profile, password: pwd)
                 dismiss()
@@ -34,7 +34,7 @@ struct RemoteDesktopView: View {
 
     private func openEditProfileWindow(_ profile: RemoteProfile) {
         let remoteState = state
-        presentInWindow(title: "Sửa host Remote", width: 440, height: 360) { dismiss in
+        presentInWindow(title: "Sửa host Remote", width: 440, height: 480) { dismiss in
             AddRemoteProfileSheet(store: remoteState.store, editing: profile) { updated, pwd in
                 remoteState.updateProfile(updated, password: pwd)
                 dismiss()
@@ -46,8 +46,9 @@ struct RemoteDesktopView: View {
         guard let session = state.session(id) else { return }
         state.setDetached(id, true)
         let remoteState = state
-        presentInWindow(title: session.profile.displayName, width: 1024, height: 720) { _ in
-            RemoteDetachedView(session: session) {
+        presentInWindow(title: session.profile.displayName, width: 1024, height: 720,
+                        fixedSize: false) { _ in
+            RemoteDetachedView(state: remoteState, id: id, session: session) {
                 remoteState.setDetached(id, false)
             }
         }
@@ -98,7 +99,7 @@ struct RemoteDesktopView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(p.displayName).font(.body.bold()).lineLimit(1)
                     .foregroundStyle(Theme.textPrimary)
-                Text("\(p.kind.rawValue) · \(p.host):\(p.port)")
+                Text(verbatim: "\(p.kind.rawValue) · \(p.host):\(p.port)")
                     .font(Theme.mono(11, .regular)).foregroundStyle(Theme.textTertiary)
             }
             Spacer()
@@ -200,9 +201,13 @@ struct RemoteDesktopView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 .background(Color.black)
             } else {
-                RemoteSessionView(session: session)
+                RemoteSessionView(session: session, isDetachedHost: false, state: state)
                     .id(id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .overlay {
+                        RemoteStatusOverlay(state: state.sessionStates[id] ?? .disconnected,
+                                            host: session.profile.host)
+                    }
             }
         }
     }
@@ -235,6 +240,9 @@ struct RemoteDesktopView: View {
 /// tại một thời điểm nhờ detachedSessionIDs).
 struct RemoteSessionView: NSViewRepresentable {
     let session: any RemoteSession
+    /// true = host trong cửa sổ TÁCH; false = host nhúng trong app chính.
+    var isDetachedHost = false
+    @ObservedObject var state: RemoteState
 
     func makeNSView(context: Context) -> NSView {
         let container = NSView()
@@ -249,6 +257,12 @@ struct RemoteSessionView: NSViewRepresentable {
     }
 
     private func mount(into container: NSView) {
+        // Chỉ host KHỚP trạng thái detached hiện tại mới được gắn framebuffer. Cùng một
+        // NSView bị 2 host (nhúng + tách) giành addSubview → khi tách, bản nhúng (đang
+        // teardown, đã rời cửa sổ) giật view lại → màn đen. Guard này khử race: đã tách
+        // thì chỉ cửa sổ tách giữ view; chưa tách thì chỉ view nhúng giữ.
+        let detached = state.detachedSessionIDs.contains(session.id)
+        guard isDetachedHost == detached else { return }
         let v = session.makeView()
         guard v.superview !== container else { return }
         v.removeFromSuperview()
@@ -263,16 +277,69 @@ struct RemoteSessionView: NSViewRepresentable {
     }
 }
 
-/// Nội dung cửa sổ tách: hiển thị màn hình remote; báo reattach khi cửa sổ đóng.
+/// Nội dung cửa sổ tách: hiển thị màn hình remote + overlay trạng thái; báo reattach
+/// khi cửa sổ đóng. Quan sát `state` để biết phiên đang connecting/failed/connected.
 struct RemoteDetachedView: View {
+    @ObservedObject var state: RemoteState
+    let id: UUID
     let session: any RemoteSession
     let onReattach: () -> Void
 
     var body: some View {
-        RemoteSessionView(session: session)
+        RemoteSessionView(session: session, isDetachedHost: true, state: state)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.black)
+            .overlay {
+                RemoteStatusOverlay(state: state.sessionStates[id] ?? .disconnected,
+                                    host: session.profile.host)
+            }
             .onDisappear { onReattach() }
+    }
+}
+
+private extension RemoteSessionState {
+    var isFailed: Bool { if case .failed = self { return true }; return false }
+}
+
+/// Lớp phủ trạng thái lên màn hình remote — hiện khi đang kết nối hoặc lỗi để "màn đen"
+/// luôn có ngữ cảnh (cả ở cửa sổ tách). Đã connected → trong suốt, nhường cho framebuffer.
+struct RemoteStatusOverlay: View {
+    let state: RemoteSessionState
+    let host: String
+
+    var body: some View {
+        Group {
+            switch state {
+            case .connecting:
+                box {
+                    ProgressView().controlSize(.small)
+                    Text("Đang kết nối tới \(host)…")
+                        .font(.callout).foregroundStyle(Theme.textSecondary)
+                }
+            case .failed(let msg):
+                box {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .font(.system(size: 26)).foregroundStyle(Theme.red)
+                    Text("Kết nối thất bại").font(.headline).foregroundStyle(Theme.textPrimary)
+                    Text(msg)
+                        .font(.caption).foregroundStyle(Theme.textSecondary)
+                        .multilineTextAlignment(.center).textSelection(.enabled)
+                        .frame(maxWidth: 360)
+                }
+            case .connected, .disconnected:
+                EmptyView()
+            }
+        }
+        .allowsHitTesting(state.isFailed)   // chỉ chặn input khi lỗi (để bôi chọn message)
+    }
+
+    @ViewBuilder
+    private func box<C: View>(@ViewBuilder _ content: () -> C) -> some View {
+        VStack(spacing: 12) { content() }
+            .padding(24)
+            .background(Theme.surface.opacity(0.92), in: RoundedRectangle(cornerRadius: 14))
+            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Theme.border, lineWidth: 1))
+            .shadow(radius: 20)
     }
 }
 
@@ -365,6 +432,28 @@ struct AddRemoteProfileSheet: View {
                     .focused($focus, equals: .username)
                     .onSubmit { focus = .group }
                     .textFieldStyle(.roundedBorder)
+            }
+            if profile.kind == .rdp {
+                HStack(alignment: .top, spacing: 6) {
+                    Image(systemName: "info.circle")
+                    Text("Ubuntu: **Remote Login** (tạo session mới) = **3389**; **Desktop Sharing** (vào session đang chạy, giống Windows) = **3390** khi bật cả 2 chế độ. Windows = 3389.")
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .font(.caption)
+                .foregroundStyle(Theme.textTertiary)
+                .padding(.leading, 122)   // canh lề với cột nhập (110 label + 12 padding)
+                .padding(.trailing, 4)
+            }
+            if profile.kind == .rdp {
+                row("Độ phân giải") {
+                    Picker("", selection: Binding(
+                        get: { profile.resolution ?? .auto },
+                        set: { profile.resolution = $0 }
+                    )) {
+                        ForEach(RemoteResolution.allCases) { Text($0.label).tag($0) }
+                    }
+                    .labelsHidden()
+                }
             }
             row("Nhóm / Tag") {
                 TextField("dev, prod…", text: $profile.group)

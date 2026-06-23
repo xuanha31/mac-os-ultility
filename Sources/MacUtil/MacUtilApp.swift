@@ -34,6 +34,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         -> UNNotificationPresentationOptions { [.banner, .sound] }
 
     func applicationDidBecomeActive(_ notification: Notification) {
+        // CHỈ kéo cửa sổ chính lên khi chưa có cửa sổ nào là key (vd mở app từ nền). Nếu đang
+        // dùng cửa sổ remote tách/fullscreen (Space riêng), ép cửa sổ chính lên front sẽ khiến
+        // macOS nhảy Space về app chính → bỏ qua.
+        guard NSApp.keyWindow == nil else { return }
         activateMainWindow()
     }
 

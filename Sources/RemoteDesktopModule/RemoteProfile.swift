@@ -11,6 +11,35 @@ public enum RemoteKind: String, Codable, CaseIterable, Identifiable, Sendable {
     public var defaultPort: Int { self == .vnc ? 5900 : 3389 }
 }
 
+/// Độ phân giải remote (RDP). `auto` = lấy theo màn hình Mac lúc kết nối.
+public enum RemoteResolution: String, Codable, CaseIterable, Identifiable, Sendable {
+    case auto
+    case hd   = "1920x1080"
+    case qhd  = "2560x1440"
+    case uhd  = "3840x2160"
+
+    public var id: String { rawValue }
+
+    public var label: String {
+        switch self {
+        case .auto: return "Auto (màn hình này)"
+        case .hd:   return "1920×1080"
+        case .qhd:  return "2560×1440"
+        case .uhd:  return "3840×2160"
+        }
+    }
+
+    /// (rộng, cao) cố định; nil nếu Auto (resolve theo màn hình lúc kết nối).
+    public var size: (Int, Int)? {
+        switch self {
+        case .auto: return nil
+        case .hd:   return (1920, 1080)
+        case .qhd:  return (2560, 1440)
+        case .uhd:  return (3840, 2160)
+        }
+    }
+}
+
 /// Cấu hình một host remote (VNC/RDP). Secret lưu Keychain, không lưu ra file.
 public struct RemoteProfile: Identifiable, Codable, Equatable, Sendable {
     public var id: UUID
@@ -21,6 +50,8 @@ public struct RemoteProfile: Identifiable, Codable, Equatable, Sendable {
     /// RDP cần username; VNC thường để trống (hoặc auth Apple Remote Desktop).
     public var username: String
     public var group: String
+    /// Độ phân giải remote (RDP). nil = Auto (tương thích profile cũ chưa có trường này).
+    public var resolution: RemoteResolution?
 
     public init(
         id: UUID = UUID(),
@@ -29,10 +60,12 @@ public struct RemoteProfile: Identifiable, Codable, Equatable, Sendable {
         host: String = "",
         port: Int = 5900,
         username: String = "",
-        group: String = ""
+        group: String = "",
+        resolution: RemoteResolution? = nil
     ) {
         self.id = id; self.name = name; self.kind = kind; self.host = host
         self.port = port; self.username = username; self.group = group
+        self.resolution = resolution
     }
 
     public var displayName: String {

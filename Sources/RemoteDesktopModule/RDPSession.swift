@@ -2,8 +2,14 @@
 import Foundation
 import AppKit
 import CoreGraphics
+import IOSurface
+import CoreVideo
 import Core
 import CFreeRDP
+
+// Logger riêng cho remote (chẩn đoán render/kết nối). Xem qua Console.app, subsystem
+// com.macutil.app, category "remote".
+private let rdpLog = Log.make("remote")
 
 // RD Phase 2: phiên RDP dùng FreeRDP 3.x (C interop qua CFreeRDP).
 // - Dùng API CLIENT đầy đủ (freerdp_client_context_new + RDP_CLIENT_ENTRY_POINTS) thay
@@ -44,7 +50,11 @@ private func rdpClientNew(_ instance: UnsafeMutablePointer<freerdp>?,
     instance.pointee.VerifyChangedCertificateEx = rdpVerifyChangedCertificateEx
     instance.pointee.LogonErrorInfo = rdpLogonErrorInfo
     // Đăng ký handler kênh: khi GFX nối → gdi_graphics_pipeline_init đổ GFX vào primary_buffer.
-    if let context { cfreerdp_subscribe_channel_handlers(context) }
+    // Thêm handler riêng để bắt kênh cliprdr (clipboard) → gắn cầu nối NSPasteboard.
+    if let context {
+        cfreerdp_subscribe_channel_handlers(context)
+        cfreerdp_subscribe_channel_connected(context, rdpCliprdrChannelConnected)
+    }
     return true
 }
 
@@ -122,21 +132,41 @@ private func rdpLogonErrorInfo(_ instance: UnsafeMutablePointer<freerdp>?,
 
 final class RDPClient: @unchecked Sendable {
     var onState: ((RemoteSessionState) -> Void)?
-    var onImage: ((CGImage) -> Void)?
+    /// Cấp khung dưới dạng IOSurface (GPU-shared) thay cho CGImage → CA dùng trực tiếp làm
+    /// texture, không alloc/copy CGImage mỗi khung → mượt ở 2.5K/3K.
+    var onSurface: ((IOSurfaceRef) -> Void)?
+
+    // Pool IOSurface luân phiên: ghi vào surface khác với surface CA đang hiển thị (tránh
+    // tearing/đè), và đổi object mỗi khung để CA chịu cập nhật (tránh cache → đơ).
+    private var surfacePool: [IOSurfaceRef] = []
+    private var surfaceIndex = 0
+    private var surfaceW = 0
+    private var surfaceH = 0
 
     private let host: String
     private let port: UInt16
     private let username: String
     private let password: String
     private let domain: String
+    private let width: Int
+    private let height: Int
 
     private var context: UnsafeMutablePointer<rdpContext>?
     private var thread: Thread?
     private var running = false
+    private var framesRendered = 0
+    private var clipboard: RDPClipboard?
 
-    init(host: String, port: UInt16, username: String, password: String, domain: String) {
+    /// Gọi từ handler "channel connected" khi kênh cliprdr nối.
+    func attachClipboard(_ ctx: UnsafeMutablePointer<CliprdrClientContext>) {
+        clipboard = RDPClipboard(ctx)
+    }
+
+    init(host: String, port: UInt16, username: String, password: String, domain: String,
+         width: Int = 0, height: Int = 0) {
         self.host = host; self.port = port
         self.username = username; self.password = password; self.domain = domain
+        self.width = width; self.height = height
     }
 
     func start() {
@@ -185,7 +215,9 @@ final class RDPClient: @unchecked Sendable {
         // DEACTIVATE_ALL ở bước activation → freerdp_post_connect failed. parse_command_line
         // dựng đủ bộ mặc định nhất quán nên kết nối được.
         // Password KHÔNG đưa vào argv (tránh lộ qua ps) → set riêng qua API sau khi parse.
-        var args = ["MacUtil", "/cert:ignore", "/dynamic-resolution", "/v:\(host):\(port)"]
+        var args = ["MacUtil", "/cert:ignore", "/dynamic-resolution", "/clipboard"]
+        if width > 0, height > 0 { args.append("/size:\(width)x\(height)") }
+        args.append("/v:\(host):\(port)")
         if !username.isEmpty { args.append("/u:\(username)") }
         if !domain.isEmpty   { args.append("/d:\(domain)") }
         let parseRC = Self.withCStringArray(args) { argc, argv in
@@ -210,6 +242,8 @@ final class RDPClient: @unchecked Sendable {
             onState?(.failed("RDP thất bại: \(detail) [\(name), 0x\(hex)]"))
             cleanup(); return
         }
+        let gfxOn = freerdp_settings_get_bool(settings, FreeRDP_SupportGraphicsPipeline)
+        rdpLog.info("RDP connected \(self.host):\(self.port) GFX=\(gfxOn)")
         onState?(.connected)
 
         var handles = [HANDLE?](repeating: nil, count: 64)
@@ -235,15 +269,45 @@ final class RDPClient: @unchecked Sendable {
               let gdi = ctx.pointee.gdi, let buf = gdi.pointee.primary_buffer else { return }
         let w = Int(gdi.pointee.width), h = Int(gdi.pointee.height), stride = Int(gdi.pointee.stride)
         guard w > 0, h > 0, stride > 0 else { return }
-        let data = Data(bytes: buf, count: stride * h)
-        guard let provider = CGDataProvider(data: data as CFData) else { return }
-        let bmp = CGBitmapInfo(rawValue: CGImageAlphaInfo.noneSkipFirst.rawValue
-                               | CGBitmapInfo.byteOrder32Little.rawValue)
-        guard let img = CGImage(width: w, height: h, bitsPerComponent: 8, bitsPerPixel: 32,
-                                bytesPerRow: stride, space: CGColorSpaceCreateDeviceRGB(),
-                                bitmapInfo: bmp, provider: provider, decode: nil,
-                                shouldInterpolate: false, intent: .defaultIntent) else { return }
-        onImage?(img)
+
+        if framesRendered == 0 {
+            var nonZero = false
+            for i in 0..<min(stride * h, 4096) where buf[i] != 0 { nonZero = true; break }
+            rdpLog.info("RDP first frame \(w)x\(h) stride=\(stride) nonZeroPixels=\(nonZero)")
+        }
+        framesRendered += 1
+
+        // (Re)tạo pool nếu kích thước đổi (dynamic-resolution).
+        if surfaceW != w || surfaceH != h || surfacePool.isEmpty { rebuildSurfacePool(w: w, h: h) }
+        guard !surfacePool.isEmpty else { return }
+
+        let surf = surfacePool[surfaceIndex]
+        surfaceIndex = (surfaceIndex + 1) % surfacePool.count
+
+        IOSurfaceLock(surf, [], nil)
+        let dst = IOSurfaceGetBaseAddress(surf)
+        let dstStride = IOSurfaceGetBytesPerRow(surf)
+        let rowBytes = min(w * 4, stride, dstStride)
+        for row in 0..<h {
+            memcpy(dst.advanced(by: row * dstStride), buf.advanced(by: row * stride), rowBytes)
+        }
+        IOSurfaceUnlock(surf, [], nil)
+        onSurface?(surf)
+    }
+
+    private func rebuildSurfacePool(w: Int, h: Int) {
+        surfacePool.removeAll()
+        let props: [CFString: Any] = [
+            kIOSurfaceWidth: w,
+            kIOSurfaceHeight: h,
+            kIOSurfaceBytesPerElement: 4,
+            kIOSurfacePixelFormat: Int(kCVPixelFormatType_32BGRA)
+        ]
+        for _ in 0..<3 {
+            if let s = IOSurfaceCreate(props as CFDictionary) { surfacePool.append(s) }
+        }
+        surfaceIndex = 0
+        surfaceW = w; surfaceH = h
     }
 
     func sendMouse(flags: UInt16, x: UInt16, y: UInt16) {
@@ -264,6 +328,8 @@ final class RDPClient: @unchecked Sendable {
     }
 
     private func cleanup() {
+        clipboard?.stop()
+        clipboard = nil
         if let ctx = context {
             RDPClientRegistry.shared.remove(UnsafeMutableRawPointer(ctx))
             freerdp_client_context_free(ctx)
@@ -278,23 +344,26 @@ final class RDPFramebufferNSView: NSView {
     var onMouse: ((UInt16, UInt16, UInt16) -> Void)?
     var onKey: ((UInt16, Bool) -> Void)?
 
-    private var image: CGImage?
+    private var surface: IOSurfaceRef?
 
     override var acceptsFirstResponder: Bool { true }
-    // Không override isFlipped (mặc định false, gốc dưới-trái). Render bằng layer.contents
-    // như VNC: hệ thống vẽ CGImage ĐÚNG CHIỀU + tự co giãn theo contentsGravity, và chạy
-    // được cả khi tách ra cửa sổ riêng (không phụ thuộc draw() có được gọi hay không).
-    func setImage(_ img: CGImage) {
-        image = img
-        layer?.contents = img
+    // Không override isFlipped (mặc định false, gốc dưới-trái). Render bằng layer.contents =
+    // IOSurface (GPU-shared): CA dùng trực tiếp làm texture, vẽ ĐÚNG CHIỀU + co giãn theo
+    // contentsGravity, chạy cả khi tách cửa sổ. Pool đổi object mỗi khung → CA không cache.
+    func setSurface(_ s: IOSurfaceRef) {
+        surface = s
+        // Chuyển cửa sổ (tách/gộp) có thể tắt layer-backing → tự bật lại để khỏi đen.
+        if !wantsLayer { wantsLayer = true }
+        layer?.contents = s
     }
 
     private func remotePoint(_ event: NSEvent) -> (UInt16, UInt16) {
         var p = convert(event.locationInWindow, from: nil)
-        guard let image, bounds.width > 0, bounds.height > 0 else { return (0, 0) }
+        guard let surface, bounds.width > 0, bounds.height > 0 else { return (0, 0) }
+        let iw = CGFloat(IOSurfaceGetWidth(surface)), ih = CGFloat(IOSurfaceGetHeight(surface))
         p.y = bounds.height - p.y   // view không flip → đổi gốc về trên-trái như RDP
-        let rx = max(0, min(CGFloat(image.width) - 1, p.x / bounds.width * CGFloat(image.width)))
-        let ry = max(0, min(CGFloat(image.height) - 1, p.y / bounds.height * CGFloat(image.height)))
+        let rx = max(0, min(iw - 1, p.x / bounds.width * iw))
+        let ry = max(0, min(ih - 1, p.y / bounds.height * ih))
         return (UInt16(rx), UInt16(ry))
     }
 
@@ -336,10 +405,17 @@ final class RDPFramebufferNSView: NSView {
         lastFlags = f
     }
 
-    // Nhận phím ngay khi tab hiện ra (không cần click trước).
+    // Nhận phím ngay khi tab hiện ra (không cần click trước). Đồng thời khôi phục layer
+    // khi chuyển cửa sổ (tách/gộp): AppKit có thể tạo lại backing layer → mất
+    // contents/gravity/backgroundColor (→ màn đen). Đặt lại + vẽ ngay khung gần nhất.
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
-        if window != nil { window?.makeFirstResponder(self) }
+        guard window != nil else { return }
+        wantsLayer = true
+        layer?.contentsGravity = .resize
+        layer?.backgroundColor = NSColor.black.cgColor
+        if let surface { layer?.contents = surface }
+        window?.makeFirstResponder(self)
     }
 
     override func updateTrackingAreas() {
@@ -404,11 +480,13 @@ final class RDPSession: RemoteSession {
     init(profile: RemoteProfile, store: RemoteProfileStore) {
         self.id = profile.id
         self.profile = profile
+        let (w, h) = Self.resolveSize(profile.resolution ?? .auto)
         self.client = RDPClient(host: profile.host,
                                 port: UInt16(clamping: profile.port),
                                 username: profile.username,
                                 password: store.password(for: profile) ?? "",
-                                domain: "")
+                                domain: "",
+                                width: w, height: h)
         view.wantsLayer = true
         view.layer?.contentsGravity = .resize   // kéo đầy khung (khớp cách map toạ độ chuột)
         view.layer?.backgroundColor = NSColor.black.cgColor
@@ -422,18 +500,46 @@ final class RDPSession: RemoteSession {
                 guard let self else { return }
                 self.onStateChange?(st)
                 switch st {
-                case .connected:                 self.startRenderTimer()
+                case .connected:                 self.startRenderTimer(); self.reclaimFocusSoon()
                 case .disconnected, .failed:     self.stopRenderTimer()
                 case .connecting:                break
                 }
             } }
         }
-        client.onImage = { [weak self] img in
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.view.setImage(img) } }
+        client.onSurface = { [weak self] surf in
+            DispatchQueue.main.async { MainActor.assumeIsolated { self?.view.setSurface(surf) } }
         }
     }
 
     deinit { renderTimer?.invalidate() }
+
+    /// Quy đổi RemoteResolution → (rộng, cao) cho FreeRDP. Auto = kích thước PIXEL đầy đủ của
+    /// màn hình chính (frame × backingScale) → nét tối đa; render bằng IOSurface nên 2.5K/3K
+    /// vẫn mượt. Cap 3840×2160, làm tròn chẵn (RDP yêu cầu chiều chẵn).
+    private static func resolveSize(_ res: RemoteResolution) -> (Int, Int) {
+        if let s = res.size { return s }
+        let screen = NSScreen.main
+        let scale = screen?.backingScaleFactor ?? 2
+        let size = screen?.frame.size ?? CGSize(width: 1920, height: 1080)
+        var w = min(max(Int((size.width * scale).rounded()), 800), 3840)
+        var h = min(max(Int((size.height * scale).rounded()), 600), 2160)
+        if w % 2 != 0 { w -= 1 }
+        if h % 2 != 0 { h -= 1 }
+        return (w, h)
+    }
+
+    /// Sau khi kết nối, một loạt re-render đôi lúc kéo cửa sổ chính lên key → "bay" khỏi màn
+    /// remote. Giành lại key + first responder cho cửa sổ chứa view remote (nhúng hoặc tách),
+    /// thử vài nhịp đầu để bắt mọi thời điểm bị giật.
+    private func reclaimFocusSoon() {
+        for delay in [0.3, 0.8, 1.5] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self, let win = self.view.window else { return }
+                win.makeKey()
+                win.makeFirstResponder(self.view)
+            }
+        }
+    }
 
     private func startRenderTimer() {
         stopRenderTimer()

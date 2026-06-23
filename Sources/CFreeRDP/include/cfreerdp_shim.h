@@ -18,6 +18,8 @@
 #include <freerdp/update.h>
 #include <freerdp/client/cmdline.h>
 #include <freerdp/channels/channels.h>
+#include <freerdp/channels/cliprdr.h>
+#include <freerdp/client/cliprdr.h>
 
 /* PIXEL_FORMAT_BGRA32 là macro hàm → không import sang Swift được.
  * Bọc thành hàm inline để Swift lấy giá trị hằng. */
@@ -42,6 +44,15 @@ static inline void cfreerdp_subscribe_channel_handlers(rdpContext* ctx) {
     if (!ctx || !ctx->pubSub) return;
     PubSub_SubscribeChannelConnected(ctx->pubSub, freerdp_client_OnChannelConnectedEventHandler);
     PubSub_SubscribeChannelDisconnected(ctx->pubSub, freerdp_client_OnChannelDisconnectedEventHandler);
+}
+
+/* Đăng ký THÊM handler riêng của app cho sự kiện "channel connected" — dùng để bắt
+ * con trỏ CliprdrClientContext khi kênh "cliprdr" nối (FreeRDP chỉ cấp kênh, phần cầu
+ * nối clipboard ↔ NSPasteboard do app tự lo). PubSub_Subscribe* là macro nên bọc lại. */
+static inline void cfreerdp_subscribe_channel_connected(rdpContext* ctx,
+                                                        pChannelConnectedEventHandler fn) {
+    if (!ctx || !ctx->pubSub) return;
+    PubSub_SubscribeChannelConnected(ctx->pubSub, fn);
 }
 
 #endif /* CFREERDP_SHIM_H */

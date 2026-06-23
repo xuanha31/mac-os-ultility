@@ -20,14 +20,19 @@ func presentInWindow<V: View>(
     title: String = "",
     width: CGFloat = 500,
     height: CGFloat = 420,
+    fixedSize: Bool = true,
     @ViewBuilder content: (_ dismiss: @escaping () -> Void) -> V
 ) -> UUID {
     let id = UUID()
     let dismiss: () -> Void = { dismissWindow(id) }
 
-    // Ép nội dung có kích thước cố định khớp cửa sổ — nếu không, NSHostingController
-    // tự co cửa sổ theo ideal size làm ScrollView (ô nhập) bị co về 0.
-    let framed = AnyView(content(dismiss).frame(width: width, height: height))
+    // Form: ép kích thước cố định — nếu không NSHostingController tự co cửa sổ theo ideal
+    // size làm ScrollView (ô nhập) bị co về 0.
+    // fixedSize=false: nội dung fill theo cửa sổ (vd màn hình remote co giãn khi resize).
+    let inner = content(dismiss)
+    let framed = fixedSize
+        ? AnyView(inner.frame(width: width, height: height))
+        : AnyView(inner.frame(maxWidth: .infinity, maxHeight: .infinity))
     let hosting = NSHostingController(rootView: framed)
     hosting.sizingOptions = []   // không cho hosting tự đổi kích thước window
 
@@ -42,6 +47,12 @@ func presentInWindow<V: View>(
     window.setContentSize(NSSize(width: width, height: height))
     window.isReleasedWhenClosed = false
     window.center()
+    if !fixedSize {
+        // Cửa sổ fill (vd màn hình remote): cho nút xanh phóng to TOÀN màn hình + giữ
+        // kích thước nhỏ tối thiểu hợp lý khi kéo. Nội dung tự co giãn theo cửa sổ.
+        window.collectionBehavior.insert(.fullScreenPrimary)
+        window.minSize = NSSize(width: 480, height: 320)
+    }
 
     let controller = NSWindowController(window: window)
     openWindows[id] = controller

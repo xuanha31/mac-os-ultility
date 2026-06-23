@@ -573,7 +573,7 @@ struct SFTPPanel: View {
             List {
                 // Lên thư mục cha (trừ khi đang ở gốc).
                 if path != "/" {
-                    Button { path = parentPath(); refresh() } label: {
+                    Button { load(parentPath()) } label: {
                         HStack(spacing: 8) {
                             Image(systemName: "arrow.up.left.circle").foregroundStyle(Theme.accent)
                             Text("..").foregroundStyle(Theme.textSecondary)
@@ -594,7 +594,7 @@ struct SFTPPanel: View {
                     .listRowBackground(Theme.bg)
                     .contentShape(Rectangle())
                     // Click thư mục → đi vào; click file → (không làm gì, tải về qua menu chuột phải).
-                    .onTapGesture { if entry.isDirectory { path = childPath(entry.name); refresh() } }
+                    .onTapGesture { if entry.isDirectory { load(childPath(entry.name)) } }
                     .contextMenu {
                         if !entry.isDirectory { Button("Tải về…") { download(entry.name) } }
                     }
@@ -620,12 +620,17 @@ struct SFTPPanel: View {
         .onAppear { refresh() }
     }
 
-    private func refresh() {
+    private func refresh() { load(path) }
+
+    /// Liệt kê `target`; CHỈ đổi `path` khi thành công (tránh path nối thêm khi liệt kê lỗi).
+    private func load(_ target: String) {
         busy = true; status = "Đang tải danh sách…"
         Task {
             do {
-                entries = try await state.listRemote(sessionID, path: path)
-                status = "\(entries.count) mục"
+                let result = try await state.listRemote(sessionID, path: target)
+                path = target
+                entries = result
+                status = "\(result.count) mục"
             } catch { status = "Lỗi: \(error)" }
             busy = false
         }

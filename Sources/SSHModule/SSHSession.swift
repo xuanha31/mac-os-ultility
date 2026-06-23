@@ -101,37 +101,57 @@ public actor SSHSession {
 
     public func listDirectory(_ path: String) async throws -> [SFTPEntry] {
         guard let c = client, state == .connected else { throw SSHSessionError.notConnected }
+        // QUAN TRỌNG: đóng kênh SFTP sau mỗi thao tác. openSFTP() tạo kênh mới; không đóng
+        // sẽ rò rỉ kênh → sau vài lần duyệt vượt giới hạn của server (channelSetupRejected).
         let sftp = try await c.openSFTP()
-        let names = try await sftp.listDirectory(atPath: path)
-        // SFTPMessage.Name wraps [SFTPPathComponent]. longname kiểu `ls -l`: ký tự đầu 'd' = thư mục.
-        // Bỏ "." và ".." (UI tự thêm nút lên cấp trên).
-        return names.flatMap { $0.components }.compactMap { comp in
-            let name = comp.filename
-            guard name != ".", name != ".." else { return nil }
-            return SFTPEntry(name: name, isDirectory: comp.longname.first == "d")
+        do {
+            let names = try await sftp.listDirectory(atPath: path)
+            // longname kiểu `ls -l`: ký tự đầu 'd' = thư mục. Bỏ "." và ".." (UI tự thêm nút lên).
+            let entries = names.flatMap { $0.components }.compactMap { comp -> SFTPEntry? in
+                let name = comp.filename
+                guard name != ".", name != ".." else { return nil }
+                return SFTPEntry(name: name, isDirectory: comp.longname.first == "d")
+            }
+            try? await sftp.close()
+            return entries
+        } catch {
+            try? await sftp.close()
+            throw error
         }
     }
 
     public func downloadFile(remotePath: String, localURL: URL) async throws {
         guard let c = client, state == .connected else { throw SSHSessionError.notConnected }
         let sftp = try await c.openSFTP()
-        let file = try await sftp.openFile(filePath: remotePath, flags: .read)
-        let buf = try await file.readAll()
-        try await file.close()
-        var data = Data()
-        var b = buf
-        if let bytes = b.readBytes(length: b.readableBytes) { data = Data(bytes) }
-        try data.write(to: localURL)
+        do {
+            let file = try await sftp.openFile(filePath: remotePath, flags: .read)
+            let buf = try await file.readAll()
+            try await file.close()
+            var data = Data()
+            var b = buf
+            if let bytes = b.readBytes(length: b.readableBytes) { data = Data(bytes) }
+            try data.write(to: localURL)
+            try? await sftp.close()
+        } catch {
+            try? await sftp.close()
+            throw error
+        }
     }
 
     public func uploadFile(localURL: URL, remotePath: String) async throws {
         guard let c = client, state == .connected else { throw SSHSessionError.notConnected }
         let data = try Data(contentsOf: localURL)
         let sftp = try await c.openSFTP()
-        let file = try await sftp.openFile(filePath: remotePath, flags: [.write, .create, .truncate])
-        var buf = ByteBuffer(bytes: data)
-        try await file.write(buf, at: 0)
-        try await file.close()
+        do {
+            let file = try await sftp.openFile(filePath: remotePath, flags: [.write, .create, .truncate])
+            let buf = ByteBuffer(bytes: data)
+            try await file.write(buf, at: 0)
+            try await file.close()
+            try? await sftp.close()
+        } catch {
+            try? await sftp.close()
+            throw error
+        }
     }
 
     // MARK: - SSH-04: Interactive shell

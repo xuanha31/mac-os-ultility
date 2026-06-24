@@ -400,7 +400,7 @@ final class RDPFramebufferNSView: NSView, NSTextInputClient {
 
     private var surface: IOSurfaceRef?
     private var shortcutKeys = Set<UInt16>()  // keyCode đang giữ ở chế độ phím tắt (Cmd/Ctrl)
-    private var markedUnits = 0               // số UTF-16 unit "đang soạn" đã gửi sang remote
+    private var marked = ""                    // chuỗi đang soạn (chỉ theo dõi; gửi khi COMMIT)
 
     override var acceptsFirstResponder: Bool { true }
     // Không override isFlipped (mặc định false, gốc dưới-trái). Render bằng layer.contents =
@@ -457,43 +457,43 @@ final class RDPFramebufferNSView: NSView, NSTextInputClient {
     }
 
     // MARK: - NSTextInputClient (cầu nối IME → Unicode cho remote; hỗ trợ tiếng Việt)
+    //
+    // Quan trọng: KHÔNG gửi từng nhịp "đang soạn" (marked) bằng cách xoá-gõ-lại — backspace +
+    // gõ lại không khớp ổn định trên remote → nhân ký tự (vd "tiaaa…ng"). Thay vào đó chỉ THEO
+    // DÕI phần đang soạn, và CHỈ gửi text cuối khi IME COMMIT (insertText / unmarkText / phím lệnh).
 
-    private func sendBackspaces(_ n: Int) {
-        guard n > 0 else { return }
-        for _ in 0..<n { onKey?(0x33, true); onKey?(0x33, false) }   // 0x33 = Delete (Backspace)
+    private func stringValue(_ any: Any) -> String {
+        (any as? String) ?? (any as? NSAttributedString)?.string ?? ""
     }
 
-    /// Thay phần "đang soạn" (markedUnits) + replacementRange bằng text mới (xoá rồi gõ lại).
-    private func replaceComposing(_ text: String, replaceLen: Int, keepMarked: Bool) {
-        sendBackspaces(markedUnits + max(0, replaceLen))
-        if !text.isEmpty { onText?(text) }
-        markedUnits = keepMarked ? text.utf16.count : 0
+    private func commitMarked() {
+        guard !marked.isEmpty else { return }
+        onText?(marked)
+        marked = ""
     }
 
     func insertText(_ string: Any, replacementRange: NSRange) {
-        let s = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
-        let rl = replacementRange.location == NSNotFound ? 0 : replacementRange.length
-        replaceComposing(s, replaceLen: rl, keepMarked: false)
+        marked = ""                          // phần soạn được commit qua chính chuỗi này
+        let s = stringValue(string)
+        if !s.isEmpty { onText?(s) }
     }
 
     func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
-        let s = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
-        let rl = replacementRange.location == NSNotFound ? 0 : replacementRange.length
-        replaceComposing(s, replaceLen: rl, keepMarked: true)
+        marked = stringValue(string)         // chỉ theo dõi; chưa gửi remote
     }
 
-    func unmarkText() { markedUnits = 0 }
+    func unmarkText() { commitMarked() }
 
     override func doCommand(by selector: Selector) {
+        commitMarked()                       // commit phần đang soạn trước khi xử lý phím lệnh
         guard let kc = Self.commandKeyCode(selector) else { return }
-        markedUnits = 0
         onKey?(kc, true); onKey?(kc, false)
     }
 
-    func hasMarkedText() -> Bool { markedUnits > 0 }
+    func hasMarkedText() -> Bool { !marked.isEmpty }
     func selectedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
     func markedRange() -> NSRange {
-        markedUnits > 0 ? NSRange(location: 0, length: markedUnits) : NSRange(location: NSNotFound, length: 0)
+        marked.isEmpty ? NSRange(location: NSNotFound, length: 0) : NSRange(location: 0, length: marked.utf16.count)
     }
     func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? { nil }
     func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }

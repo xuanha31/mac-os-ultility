@@ -393,14 +393,11 @@ final class RDPClient: @unchecked Sendable {
 
 // MARK: - NSView vẽ framebuffer + input
 
-final class RDPFramebufferNSView: NSView, NSTextInputClient {
+final class RDPFramebufferNSView: NSView {
     var onMouse: ((UInt16, UInt16, UInt16) -> Void)?
     var onKey: ((UInt16, Bool) -> Void)?     // scancode (mac keyCode → session ánh xạ)
-    var onText: ((String) -> Void)?          // text đã soạn bởi IME → gửi Unicode
 
     private var surface: IOSurfaceRef?
-    private var shortcutKeys = Set<UInt16>()  // keyCode đang giữ ở chế độ phím tắt (Cmd/Ctrl)
-    private var marked = ""                    // chuỗi đang soạn (chỉ theo dõi; gửi khi COMMIT)
 
     override var acceptsFirstResponder: Bool { true }
     // Không override isFlipped (mặc định false, gốc dưới-trái). Render bằng layer.contents =
@@ -441,87 +438,10 @@ final class RDPFramebufferNSView: NSView, NSTextInputClient {
         onMouse?(flags, x, y)
     }
 
-    // Bàn phím: phím tắt (Cmd/Ctrl) gửi scancode trực tiếp (Unicode không mang được Ctrl/Cmd);
-    // còn lại cho input method (EVKey/Unikey…) soạn → kết quả về qua NSTextInputClient
-    // (insertText/setMarkedText → Unicode; doCommandBySelector → scancode phím đặc biệt).
-    override func keyDown(with e: NSEvent) {
-        if !e.modifierFlags.intersection([.command, .control]).isEmpty {
-            shortcutKeys.insert(e.keyCode)
-            onKey?(e.keyCode, true)
-            return
-        }
-        interpretKeyEvents([e])
-    }
-    override func keyUp(with e: NSEvent) {
-        if shortcutKeys.remove(e.keyCode) != nil { onKey?(e.keyCode, false) }
-    }
-
-    // MARK: - NSTextInputClient (cầu nối IME → Unicode cho remote; hỗ trợ tiếng Việt)
-    //
-    // Quan trọng: KHÔNG gửi từng nhịp "đang soạn" (marked) bằng cách xoá-gõ-lại — backspace +
-    // gõ lại không khớp ổn định trên remote → nhân ký tự (vd "tiaaa…ng"). Thay vào đó chỉ THEO
-    // DÕI phần đang soạn, và CHỈ gửi text cuối khi IME COMMIT (insertText / unmarkText / phím lệnh).
-
-    private func stringValue(_ any: Any) -> String {
-        (any as? String) ?? (any as? NSAttributedString)?.string ?? ""
-    }
-
-    private func commitMarked() {
-        guard !marked.isEmpty else { return }
-        onText?(marked)
-        marked = ""
-    }
-
-    func insertText(_ string: Any, replacementRange: NSRange) {
-        marked = ""                          // phần soạn được commit qua chính chuỗi này
-        let s = stringValue(string)
-        if !s.isEmpty { onText?(s) }
-    }
-
-    func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
-        marked = stringValue(string)         // chỉ theo dõi; chưa gửi remote
-    }
-
-    func unmarkText() { commitMarked() }
-
-    override func doCommand(by selector: Selector) {
-        commitMarked()                       // commit phần đang soạn trước khi xử lý phím lệnh
-        guard let kc = Self.commandKeyCode(selector) else { return }
-        onKey?(kc, true); onKey?(kc, false)
-    }
-
-    func hasMarkedText() -> Bool { !marked.isEmpty }
-    func selectedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
-    func markedRange() -> NSRange {
-        marked.isEmpty ? NSRange(location: NSNotFound, length: 0) : NSRange(location: 0, length: marked.utf16.count)
-    }
-    func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? { nil }
-    func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
-    func characterIndex(for point: NSPoint) -> Int { NSNotFound }
-    func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
-        guard let window else { return .zero }
-        return window.convertToScreen(convert(NSRect(x: 0, y: 0, width: 1, height: 16), to: nil))
-    }
-
-    /// Selector phím đặc biệt từ input system → mac keyCode (session ánh xạ tiếp sang scancode).
-    private static func commandKeyCode(_ sel: Selector) -> UInt16? {
-        switch NSStringFromSelector(sel) {
-        case "insertNewline:", "insertLineBreak:", "insertNewlineIgnoringFieldEditor:": return 0x24 // Return
-        case "insertTab:", "insertBacktab:":                  return 0x30 // Tab
-        case "deleteBackward:":                               return 0x33 // Backspace
-        case "deleteForward:":                                return 0x75 // Forward Delete
-        case "cancelOperation:":                              return 0x35 // Esc
-        case "moveLeft:", "moveLeftAndModifySelection:":      return 0x7B // ←
-        case "moveRight:", "moveRightAndModifySelection:":    return 0x7C // →
-        case "moveDown:", "moveDownAndModifySelection:":      return 0x7D // ↓
-        case "moveUp:", "moveUpAndModifySelection:":          return 0x7E // ↑
-        case "moveToBeginningOfLine:", "moveToLeftEndOfLine:": return 0x73 // Home
-        case "moveToEndOfLine:", "moveToRightEndOfLine:":     return 0x77 // End
-        case "scrollPageUp:", "pageUp:":                      return 0x74 // Page Up
-        case "scrollPageDown:", "pageDown:":                  return 0x79 // Page Down
-        default: return nil
-        }
-    }
+    // Bàn phím: gửi theo macOS keyCode → scancode (down/up riêng để giữ phím, lặp đúng).
+    // Ổn định cho gõ ASCII/phím tắt/phím đặc biệt. Gõ tiếng Việt (IME) dùng clipboard paste.
+    override func keyDown(with e: NSEvent) { onKey?(e.keyCode, true) }
+    override func keyUp(with e: NSEvent) { onKey?(e.keyCode, false) }
 
     private var lastFlags: NSEvent.ModifierFlags = []
     override func flagsChanged(with e: NSEvent) {
@@ -667,11 +587,6 @@ final class RDPSession: RemoteSession {
         view.onKey   = { [weak client] macKeyCode, down in
             guard let rdp = macKeyToRDPScancode[macKeyCode] else { return }
             client?.sendScancode(rdp, down: down)
-        }
-        // Text đã soạn bởi IME (EVKey/Unikey…) → gửi từng UTF-16 unit dạng Unicode (gõ được
-        // tiếng Việt; scancode không biểu diễn được ký tự có dấu).
-        view.onText = { [weak client] text in
-            for u in text.utf16 { client?.sendUnicode(u, down: true); client?.sendUnicode(u, down: false) }
         }
         client.onState = { [weak self] st in
             DispatchQueue.main.async { MainActor.assumeIsolated {

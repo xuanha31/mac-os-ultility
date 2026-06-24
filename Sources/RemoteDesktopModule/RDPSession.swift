@@ -393,11 +393,14 @@ final class RDPClient: @unchecked Sendable {
 
 // MARK: - NSView vẽ framebuffer + input
 
-final class RDPFramebufferNSView: NSView {
+final class RDPFramebufferNSView: NSView, NSTextInputClient {
     var onMouse: ((UInt16, UInt16, UInt16) -> Void)?
-    var onKey: ((UInt16, Bool) -> Void)?
+    var onKey: ((UInt16, Bool) -> Void)?     // scancode (mac keyCode → session ánh xạ)
+    var onText: ((String) -> Void)?          // text đã soạn bởi IME → gửi Unicode
 
     private var surface: IOSurfaceRef?
+    private var shortcutKeys = Set<UInt16>()  // keyCode đang giữ ở chế độ phím tắt (Cmd/Ctrl)
+    private var markedUnits = 0               // số UTF-16 unit "đang soạn" đã gửi sang remote
 
     override var acceptsFirstResponder: Bool { true }
     // Không override isFlipped (mặc định false, gốc dưới-trái). Render bằng layer.contents =
@@ -438,10 +441,87 @@ final class RDPFramebufferNSView: NSView {
         onMouse?(flags, x, y)
     }
 
-    // Gửi theo macOS keyCode (onKey ánh xạ → RDP scancode). down/up riêng để giữ phím
-    // (Shift, lặp phím) đúng. Không tự nhả ở keyDown nữa.
-    override func keyDown(with e: NSEvent) { onKey?(e.keyCode, true) }
-    override func keyUp(with e: NSEvent) { onKey?(e.keyCode, false) }
+    // Bàn phím: phím tắt (Cmd/Ctrl) gửi scancode trực tiếp (Unicode không mang được Ctrl/Cmd);
+    // còn lại cho input method (EVKey/Unikey…) soạn → kết quả về qua NSTextInputClient
+    // (insertText/setMarkedText → Unicode; doCommandBySelector → scancode phím đặc biệt).
+    override func keyDown(with e: NSEvent) {
+        if !e.modifierFlags.intersection([.command, .control]).isEmpty {
+            shortcutKeys.insert(e.keyCode)
+            onKey?(e.keyCode, true)
+            return
+        }
+        interpretKeyEvents([e])
+    }
+    override func keyUp(with e: NSEvent) {
+        if shortcutKeys.remove(e.keyCode) != nil { onKey?(e.keyCode, false) }
+    }
+
+    // MARK: - NSTextInputClient (cầu nối IME → Unicode cho remote; hỗ trợ tiếng Việt)
+
+    private func sendBackspaces(_ n: Int) {
+        guard n > 0 else { return }
+        for _ in 0..<n { onKey?(0x33, true); onKey?(0x33, false) }   // 0x33 = Delete (Backspace)
+    }
+
+    /// Thay phần "đang soạn" (markedUnits) + replacementRange bằng text mới (xoá rồi gõ lại).
+    private func replaceComposing(_ text: String, replaceLen: Int, keepMarked: Bool) {
+        sendBackspaces(markedUnits + max(0, replaceLen))
+        if !text.isEmpty { onText?(text) }
+        markedUnits = keepMarked ? text.utf16.count : 0
+    }
+
+    func insertText(_ string: Any, replacementRange: NSRange) {
+        let s = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
+        let rl = replacementRange.location == NSNotFound ? 0 : replacementRange.length
+        replaceComposing(s, replaceLen: rl, keepMarked: false)
+    }
+
+    func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        let s = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
+        let rl = replacementRange.location == NSNotFound ? 0 : replacementRange.length
+        replaceComposing(s, replaceLen: rl, keepMarked: true)
+    }
+
+    func unmarkText() { markedUnits = 0 }
+
+    override func doCommand(by selector: Selector) {
+        guard let kc = Self.commandKeyCode(selector) else { return }
+        markedUnits = 0
+        onKey?(kc, true); onKey?(kc, false)
+    }
+
+    func hasMarkedText() -> Bool { markedUnits > 0 }
+    func selectedRange() -> NSRange { NSRange(location: NSNotFound, length: 0) }
+    func markedRange() -> NSRange {
+        markedUnits > 0 ? NSRange(location: 0, length: markedUnits) : NSRange(location: NSNotFound, length: 0)
+    }
+    func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? { nil }
+    func validAttributesForMarkedText() -> [NSAttributedString.Key] { [] }
+    func characterIndex(for point: NSPoint) -> Int { NSNotFound }
+    func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+        guard let window else { return .zero }
+        return window.convertToScreen(convert(NSRect(x: 0, y: 0, width: 1, height: 16), to: nil))
+    }
+
+    /// Selector phím đặc biệt từ input system → mac keyCode (session ánh xạ tiếp sang scancode).
+    private static func commandKeyCode(_ sel: Selector) -> UInt16? {
+        switch NSStringFromSelector(sel) {
+        case "insertNewline:", "insertLineBreak:", "insertNewlineIgnoringFieldEditor:": return 0x24 // Return
+        case "insertTab:", "insertBacktab:":                  return 0x30 // Tab
+        case "deleteBackward:":                               return 0x33 // Backspace
+        case "deleteForward:":                                return 0x75 // Forward Delete
+        case "cancelOperation:":                              return 0x35 // Esc
+        case "moveLeft:", "moveLeftAndModifySelection:":      return 0x7B // ←
+        case "moveRight:", "moveRightAndModifySelection:":    return 0x7C // →
+        case "moveDown:", "moveDownAndModifySelection:":      return 0x7D // ↓
+        case "moveUp:", "moveUpAndModifySelection:":          return 0x7E // ↑
+        case "moveToBeginningOfLine:", "moveToLeftEndOfLine:": return 0x73 // Home
+        case "moveToEndOfLine:", "moveToRightEndOfLine:":     return 0x77 // End
+        case "scrollPageUp:", "pageUp:":                      return 0x74 // Page Up
+        case "scrollPageDown:", "pageDown:":                  return 0x79 // Page Down
+        default: return nil
+        }
+    }
 
     private var lastFlags: NSEvent.ModifierFlags = []
     override func flagsChanged(with e: NSEvent) {
@@ -587,6 +667,11 @@ final class RDPSession: RemoteSession {
         view.onKey   = { [weak client] macKeyCode, down in
             guard let rdp = macKeyToRDPScancode[macKeyCode] else { return }
             client?.sendScancode(rdp, down: down)
+        }
+        // Text đã soạn bởi IME (EVKey/Unikey…) → gửi từng UTF-16 unit dạng Unicode (gõ được
+        // tiếng Việt; scancode không biểu diễn được ký tự có dấu).
+        view.onText = { [weak client] text in
+            for u in text.utf16 { client?.sendUnicode(u, down: true); client?.sendUnicode(u, down: false) }
         }
         client.onState = { [weak self] st in
             DispatchQueue.main.async { MainActor.assumeIsolated {

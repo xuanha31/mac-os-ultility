@@ -581,11 +581,13 @@ final class RDPSession: RemoteSession {
         view.wantsLayer = true
         view.layer?.contentsGravity = .resize   // kéo đầy khung (khớp cách map toạ độ chuột)
         view.layer?.backgroundColor = NSColor.black.cgColor
-        // LƯU Ý: KHÔNG bật live dynamic-resolution (gửi SendMonitorLayout khi resize). Đổi độ
-        // phân giải nhiều lần làm gnome (nhất là màn hình đăng nhập) vẽ lại nhưng không xoá nội
-        // dung cũ → ghosting/vỡ hình (nhiều logo, panel lặp). Giữ độ phân giải cố định theo
-        // /size lúc kết nối; IOSurface co giãn lấp cửa sổ. (Còn sendMonitorLayout/disp giữ lại
-        // để dùng nếu sau này có cách ép repaint sạch.)
+        // Dynamic-resolution chỉ cho chế độ Auto: desktop remote bám theo kích thước cửa sổ.
+        // Hợp với Desktop Sharing (luôn ở desktop đã đăng nhập → repaint sạch khi đổi độ phân
+        // giải). Preset cố định cho Remote Login (tránh ghosting ở màn hình đăng nhập GDM khi
+        // đổi độ phân giải nhiều lần).
+        if (profile.resolution ?? .auto) == .auto {
+            view.onResize = { [weak client] w, h in client?.sendMonitorLayout(width: w, height: h) }
+        }
         view.onMouse = { [weak client] f, x, y in client?.sendMouse(flags: f, x: x, y: y) }
         view.onKey   = { [weak client] macKeyCode, down in
             guard let rdp = macKeyToRDPScancode[macKeyCode] else { return }

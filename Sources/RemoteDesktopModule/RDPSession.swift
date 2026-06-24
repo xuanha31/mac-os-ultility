@@ -269,6 +269,9 @@ final class RDPClient: @unchecked Sendable {
             onState?(.failed("Cấu hình RDP lỗi (parse_command_line rc=\(parseRC))")); cleanup(); return
         }
         if !password.isEmpty { freerdp_settings_set_string(settings, FreeRDP_Password, password) }
+        // Chẩn đoán auth: log USER + ĐỘ DÀI password (không log password). passLen=0 → chưa lưu
+        // mật khẩu (bẫy "để trống khi sửa"); passLen khác độ dài thật → sai mật khẩu.
+        rdpLog.info("RDP auth user=\(self.username.isEmpty ? "(empty)" : self.username) passLen=\(self.password.count)")
         // GFX giữ BẬT (server này yêu cầu — tắt là từ chối kết nối). Việc đổ GFX vào
         // gdi.primary_buffer do handler kênh (đăng ký ở rdpClientNew) tự lo qua
         // gdi_graphics_pipeline_init.

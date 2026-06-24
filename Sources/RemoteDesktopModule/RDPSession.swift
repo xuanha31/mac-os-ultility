@@ -619,19 +619,13 @@ final class RDPSession: RemoteSession {
 
     deinit { renderTimer?.invalidate() }
 
-    /// Quy đổi RemoteResolution → (rộng, cao) cho FreeRDP. Auto = kích thước PIXEL đầy đủ của
-    /// màn hình chính (frame × backingScale) → nét tối đa; render bằng IOSurface nên 2.5K/3K
-    /// vẫn mượt. Cap 3840×2160, làm tròn chẵn (RDP yêu cầu chiều chẵn).
+    /// Quy đổi RemoteResolution → (rộng, cao) cho FreeRDP. (0,0) = KHÔNG gửi /size.
+    /// Auto = để SERVER tự quyết: Desktop Sharing dùng đúng độ phân giải phiên đang chạy
+    /// (ép /size lớn hơn sẽ làm desktop nằm góc + viền trắng/vỡ hình). Muốn ép độ phân giải
+    /// cao (vd Remote Login) thì chọn preset. Preset cap 3840×2160, làm tròn chẵn.
     private static func resolveSize(_ res: RemoteResolution) -> (Int, Int) {
-        if let s = res.size { return s }
-        let screen = NSScreen.main
-        let scale = screen?.backingScaleFactor ?? 2
-        let size = screen?.frame.size ?? CGSize(width: 1920, height: 1080)
-        var w = min(max(Int((size.width * scale).rounded()), 800), 3840)
-        var h = min(max(Int((size.height * scale).rounded()), 600), 2160)
-        if w % 2 != 0 { w -= 1 }
-        if h % 2 != 0 { h -= 1 }
-        return (w, h)
+        guard let s = res.size else { return (0, 0) }   // Auto → không ép /size
+        return s
     }
 
     /// Sau khi kết nối, một loạt re-render đôi lúc kéo cửa sổ chính lên key → "bay" khỏi màn

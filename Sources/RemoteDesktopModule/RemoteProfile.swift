@@ -22,7 +22,7 @@ public enum RemoteResolution: String, Codable, CaseIterable, Identifiable, Senda
 
     public var label: String {
         switch self {
-        case .auto: return "Auto (màn hình này)"
+        case .auto: return "Auto (theo máy chủ)"
         case .hd:   return "1920×1080"
         case .qhd:  return "2560×1440"
         case .uhd:  return "3840×2160"

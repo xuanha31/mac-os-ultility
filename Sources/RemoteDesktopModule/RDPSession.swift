@@ -596,13 +596,14 @@ final class RDPSession: RemoteSession {
                     self.reconnectAttempt = 0
                     self.onStateChange?(.connected)
                     self.startRenderTimer(); self.reclaimFocusSoon()
-                case .disconnected, .failed:
+                case .disconnected:
                     self.stopRenderTimer()
-                    if self.userClosed {
-                        self.onStateChange?(st)        // user tự đóng → báo ngắt, không thử lại
-                    } else {
-                        self.scheduleReconnect()       // rớt mạng → tự kết nối lại
-                    }
+                    if self.userClosed { self.onStateChange?(.disconnected) }
+                    else { self.scheduleReconnect(reason: nil) }
+                case .failed(let msg):
+                    self.stopRenderTimer()
+                    if self.userClosed { self.onStateChange?(.failed(msg)) }
+                    else { self.scheduleReconnect(reason: msg) }   // giữ lý do thật để hiển thị
                 case .connecting:
                     self.onStateChange?(.connecting)
                 }
@@ -660,12 +661,13 @@ final class RDPSession: RemoteSession {
 
     /// Lên lịch kết nối lại sau khi rớt mạng/đứt kết nối, backoff tăng dần (tối đa 20s), thử
     /// vô hạn cho tới khi có mạng/thành công hoặc user đóng tab.
-    private func scheduleReconnect() {
+    private func scheduleReconnect(reason: String?) {
         guard !userClosed else { return }
         reconnectWork?.cancel()
         reconnectAttempt += 1
         let delay = min(Double(reconnectAttempt) * 2.0, 20.0)
-        onStateChange?(.failed("Mất kết nối — tự kết nối lại sau \(Int(delay))s (lần \(reconnectAttempt))…"))
+        let why = (reason?.isEmpty == false) ? reason! : "Mất kết nối"
+        onStateChange?(.failed("\(why)\nTự kết nối lại sau \(Int(delay))s (lần \(reconnectAttempt))…"))
         let work = DispatchWorkItem { [weak self] in
             guard let self, !self.userClosed else { return }
             self.onStateChange?(.connecting)

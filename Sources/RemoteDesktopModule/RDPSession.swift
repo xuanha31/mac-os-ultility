@@ -568,6 +568,12 @@ final class RDPSession: RemoteSession {
     private var reconnectAttempt = 0
     private var reconnectWork: DispatchWorkItem?
 
+    // Scale hiển thị (dynamic-resolution): độ phân giải remote = pixel cửa sổ × 100/scale.
+    private var dynamicResize = false
+    private var scalePercent = 100
+    private var lastViewPxW = 0
+    private var lastViewPxH = 0
+
     init(profile: RemoteProfile, store: RemoteProfileStore) {
         self.id = profile.id
         self.profile = profile
@@ -586,7 +592,8 @@ final class RDPSession: RemoteSession {
         // giải). Preset cố định cho Remote Login (tránh ghosting ở màn hình đăng nhập GDM khi
         // đổi độ phân giải nhiều lần).
         if (profile.resolution ?? .auto) == .auto {
-            view.onResize = { [weak client] w, h in client?.sendMonitorLayout(width: w, height: h) }
+            dynamicResize = true
+            view.onResize = { [weak self] w, h in self?.handleResize(pxW: w, pxH: h) }
         }
         view.onMouse = { [weak client] f, x, y in client?.sendMouse(flags: f, x: x, y: y) }
         view.onKey   = { [weak client] macKeyCode, down in
@@ -674,6 +681,26 @@ final class RDPSession: RemoteSession {
         }
         reconnectWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
+    // MARK: - Scale / dynamic resolution
+
+    private func handleResize(pxW: Int, pxH: Int) {
+        lastViewPxW = pxW; lastViewPxH = pxH
+        sendScaledLayout()
+    }
+
+    /// Đặt scale (%). 100 = 1:1; cao hơn → UI to hơn (độ phân giải remote nhỏ lại, phóng lên khung).
+    func setScale(_ percent: Int) {
+        guard dynamicResize else { return }
+        scalePercent = max(50, min(300, percent))
+        sendScaledLayout()
+    }
+
+    private func sendScaledLayout() {
+        guard dynamicResize, lastViewPxW > 0, lastViewPxH > 0 else { return }
+        client.sendMonitorLayout(width: lastViewPxW * 100 / scalePercent,
+                                 height: lastViewPxH * 100 / scalePercent)
     }
 
     func makeView() -> NSView { view }

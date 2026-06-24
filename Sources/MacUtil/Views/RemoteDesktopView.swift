@@ -154,6 +154,17 @@ struct RemoteDesktopView: View {
                 .foregroundStyle(Theme.textPrimary)
             Spacer()
             if let id = state.selectedSessionID {
+                // Scale chỉ cho phiên RDP chế độ Auto (dynamic-resolution).
+                if let s = state.sessions[id], s.profile.kind == .rdp,
+                   (s.profile.resolution ?? .auto) == .auto {
+                    Menu("Scale \(state.sessionScales[id] ?? 100)%") {
+                        ForEach([75, 100, 125, 150, 175, 200], id: \.self) { p in
+                            Button("\(p)%") { state.sessionScales[id] = p; s.setScale(p) }
+                        }
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                }
                 Button("Tách ra cửa sổ") { detachSession(id: id) }
                     .disabled(state.detachedSessionIDs.contains(id))
                 Button("Đóng tab") { state.closeSession(id: id) }

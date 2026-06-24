@@ -9,6 +9,7 @@ public final class RemoteState: ObservableObject {
     @Published public var sessions: [UUID: any RemoteSession] = [:]
     @Published public var selectedSessionID: UUID?
     @Published public var sessionStates: [UUID: RemoteSessionState] = [:]
+    @Published public var sessionScales: [UUID: Int] = [:]   // scale hiển thị remote (%)
     @Published public var statusMessage = ""
     /// Các phiên đang hiển thị ở cửa sổ tách riêng (embedded area hiện placeholder).
     @Published public var detachedSessionIDs: Set<UUID> = []

@@ -23,8 +23,16 @@ public protocol RemoteSession: AnyObject {
     func connect()
     func disconnect()
 
+    /// Đặt scale hiển thị remote theo % (100 = 1:1). Scale cao → UI to hơn (độ phân giải remote
+    /// nhỏ lại, phóng lên khung). Chỉ áp dụng cho phiên hỗ trợ dynamic-resolution (RDP Auto).
+    func setScale(_ percent: Int)
+
     /// RemoteState gán để nhận thay đổi trạng thái.
     var onStateChange: ((RemoteSessionState) -> Void)? { get set }
+}
+
+public extension RemoteSession {
+    func setScale(_ percent: Int) {}   // mặc định: không hỗ trợ (vd VNC / RDP preset)
 }
 
 /// Phiên rỗng — hiển thị thông báo thay vì màn hình remote. Dùng cho Phase 0 và

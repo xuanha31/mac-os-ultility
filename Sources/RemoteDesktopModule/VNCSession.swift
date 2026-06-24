@@ -22,6 +22,11 @@ final class VNCSession: RemoteSession {
     private var framebufferView: VNCCAFramebufferView?
     private var proxy: VNCDelegateProxy?
 
+    // Auto-reconnect khi rớt mạng (không khi user tự đóng).
+    private var userClosed = false
+    private var reconnectAttempt = 0
+    private var reconnectWork: DispatchWorkItem?
+
     init(profile: RemoteProfile, store: RemoteProfileStore) {
         self.id = profile.id
         self.profile = profile
@@ -34,6 +39,7 @@ final class VNCSession: RemoteSession {
     func makeView() -> NSView { container }
 
     func connect() {
+        userClosed = false
         let settings = VNCConnection.Settings(
             isDebugLoggingEnabled: false,
             hostname: profile.host,
@@ -53,7 +59,18 @@ final class VNCSession: RemoteSession {
         let conn = VNCConnection(settings: settings)
         let proxy = VNCDelegateProxy(username: username, password: password)
         proxy.onState = { [weak self] st in
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.onStateChange?(st) } }
+            DispatchQueue.main.async { MainActor.assumeIsolated {
+                guard let self else { return }
+                switch st {
+                case .connected:
+                    self.reconnectAttempt = 0
+                    self.onStateChange?(.connected)
+                case .disconnected, .failed:
+                    if self.userClosed { self.onStateChange?(st) } else { self.scheduleReconnect() }
+                case .connecting:
+                    self.onStateChange?(.connecting)
+                }
+            } }
         }
         proxy.onFramebuffer = { [weak self] fb, c in
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.attachFramebuffer(fb, connection: c) } }
@@ -67,11 +84,28 @@ final class VNCSession: RemoteSession {
     }
 
     func disconnect() {
+        userClosed = true                 // user chủ động đóng → không auto-reconnect
+        reconnectWork?.cancel(); reconnectWork = nil
         connection?.disconnect()
         connection = nil
         proxy = nil
         framebufferView?.removeFromSuperview()
         framebufferView = nil
+    }
+
+    /// Kết nối lại sau khi rớt mạng, backoff tăng dần (tối đa 20s), thử tới khi có mạng/user đóng.
+    private func scheduleReconnect() {
+        guard !userClosed else { return }
+        reconnectWork?.cancel()
+        reconnectAttempt += 1
+        let delay = min(Double(reconnectAttempt) * 2.0, 20.0)
+        onStateChange?(.failed("Mất kết nối — tự kết nối lại sau \(Int(delay))s (lần \(reconnectAttempt))…"))
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.userClosed else { return }
+            self.connect()   // tạo connection mới
+        }
+        reconnectWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
     }
 
     private func attachFramebuffer(_ framebuffer: VNCFramebuffer, connection: VNCConnection) {

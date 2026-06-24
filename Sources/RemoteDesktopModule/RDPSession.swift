@@ -230,6 +230,12 @@ final class RDPClient: @unchecked Sendable {
     }
 
     private func run() {
+        // Reset state để tái sử dụng client cho reconnect (run() có thể chạy lại nhiều lần).
+        ctxLock.lock()
+        framesRendered = 0
+        lastLayoutW = 0; lastLayoutH = 0
+        ctxLock.unlock()
+
         // Dựng entry points cho client API. ClientNew sẽ gắn các callback lên instance.
         var entry = RDP_CLIENT_ENTRY_POINTS()
         entry.Size = UInt32(MemoryLayout<RDP_CLIENT_ENTRY_POINTS>.size)
@@ -554,6 +560,11 @@ final class RDPSession: RemoteSession {
     // nên không thể dựa vào callback; primary_buffer luôn được mọi đường update ghi vào.
     private var renderTimer: Timer?
 
+    // Auto-reconnect: chỉ thử lại khi rớt mạng/đứt kết nối (KHÔNG khi user tự đóng).
+    private var userClosed = false
+    private var reconnectAttempt = 0
+    private var reconnectWork: DispatchWorkItem?
+
     init(profile: RemoteProfile, store: RemoteProfileStore) {
         self.id = profile.id
         self.profile = profile
@@ -580,11 +591,20 @@ final class RDPSession: RemoteSession {
         client.onState = { [weak self] st in
             DispatchQueue.main.async { MainActor.assumeIsolated {
                 guard let self else { return }
-                self.onStateChange?(st)
                 switch st {
-                case .connected:                 self.startRenderTimer(); self.reclaimFocusSoon()
-                case .disconnected, .failed:     self.stopRenderTimer()
-                case .connecting:                break
+                case .connected:
+                    self.reconnectAttempt = 0
+                    self.onStateChange?(.connected)
+                    self.startRenderTimer(); self.reclaimFocusSoon()
+                case .disconnected, .failed:
+                    self.stopRenderTimer()
+                    if self.userClosed {
+                        self.onStateChange?(st)        // user tự đóng → báo ngắt, không thử lại
+                    } else {
+                        self.scheduleReconnect()       // rớt mạng → tự kết nối lại
+                    }
+                case .connecting:
+                    self.onStateChange?(.connecting)
                 }
             } }
         }
@@ -638,8 +658,29 @@ final class RDPSession: RemoteSession {
         renderTimer = nil
     }
 
+    /// Lên lịch kết nối lại sau khi rớt mạng/đứt kết nối, backoff tăng dần (tối đa 20s), thử
+    /// vô hạn cho tới khi có mạng/thành công hoặc user đóng tab.
+    private func scheduleReconnect() {
+        guard !userClosed else { return }
+        reconnectWork?.cancel()
+        reconnectAttempt += 1
+        let delay = min(Double(reconnectAttempt) * 2.0, 20.0)
+        onStateChange?(.failed("Mất kết nối — tự kết nối lại sau \(Int(delay))s (lần \(reconnectAttempt))…"))
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, !self.userClosed else { return }
+            self.onStateChange?(.connecting)
+            self.client.start()   // tái sử dụng client: run() mở context mới
+        }
+        reconnectWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    }
+
     func makeView() -> NSView { view }
-    func connect() { onStateChange?(.connecting); client.start() }
-    func disconnect() { stopRenderTimer(); client.stop() }
+    func connect() { userClosed = false; onStateChange?(.connecting); client.start() }
+    func disconnect() {
+        userClosed = true                 // user chủ động đóng → không auto-reconnect
+        reconnectWork?.cancel(); reconnectWork = nil
+        stopRenderTimer(); client.stop()
+    }
 }
 #endif

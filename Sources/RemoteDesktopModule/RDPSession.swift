@@ -358,8 +358,12 @@ final class RDPClient: @unchecked Sendable {
 
     func sendMouse(flags: UInt16, x: UInt16, y: UInt16) {
         ctxLock.lock(); defer { ctxLock.unlock() }
-        guard let ctx = context, let input = ctx.pointee.input else { return }
+        guard let ctx = context, let input = ctx.pointee.input else {
+            if flags & 0x8000 != 0 { rdpLog.info("sendMouse DROPPED (ctx/input nil)") }
+            return
+        }
         _ = freerdp_input_send_mouse_event(input, flags, x, y)
+        if flags & 0x8000 != 0 { rdpLog.info("sendMouse click flags=0x\(String(flags, radix: 16)) at \(x),\(y)") }
     }
 
     func sendUnicode(_ code: UInt16, down: Bool) {
@@ -372,8 +376,12 @@ final class RDPClient: @unchecked Sendable {
     /// thường bỏ qua unicode keyboard nên dùng scancode mới gõ được.
     func sendScancode(_ rdpScancode: UInt16, down: Bool) {
         ctxLock.lock(); defer { ctxLock.unlock() }
-        guard let ctx = context, let input = ctx.pointee.input else { return }
+        guard let ctx = context, let input = ctx.pointee.input else {
+            if down { rdpLog.info("sendScancode 0x\(String(rdpScancode, radix: 16)) DROPPED (ctx/input nil)") }
+            return
+        }
         _ = freerdp_input_send_keyboard_event_ex(input, down, false, UInt32(rdpScancode))
+        if down { rdpLog.info("sendScancode 0x\(String(rdpScancode, radix: 16)) sent") }
     }
 
     private func cleanup() {
@@ -426,7 +434,11 @@ final class RDPFramebufferNSView: NSView {
     // PTR_FLAGS: MOVE=0x0800, DOWN=0x8000, BUTTON1=0x1000, BUTTON2=0x2000, WHEEL=0x0200
     override func mouseMoved(with e: NSEvent)    { let (x, y) = remotePoint(e); onMouse?(0x0800, x, y) }
     override func mouseDragged(with e: NSEvent)  { let (x, y) = remotePoint(e); onMouse?(0x0800, x, y) }
-    override func mouseDown(with e: NSEvent)     { window?.makeFirstResponder(self); let (x, y) = remotePoint(e); onMouse?(0x8000 | 0x1000, x, y) }
+    override func mouseDown(with e: NSEvent)     {
+        window?.makeFirstResponder(self)
+        rdpLog.info("view mouseDown keyWin=\(self.window?.isKeyWindow == true) firstResp=\(self.window?.firstResponder === self) onMouse=\(self.onMouse != nil)")
+        let (x, y) = remotePoint(e); onMouse?(0x8000 | 0x1000, x, y)
+    }
     override func mouseUp(with e: NSEvent)       { let (x, y) = remotePoint(e); onMouse?(0x1000, x, y) }
     override func rightMouseDown(with e: NSEvent){ let (x, y) = remotePoint(e); onMouse?(0x8000 | 0x2000, x, y) }
     override func rightMouseUp(with e: NSEvent)  { let (x, y) = remotePoint(e); onMouse?(0x2000, x, y) }
@@ -443,7 +455,10 @@ final class RDPFramebufferNSView: NSView {
 
     // Bàn phím: gửi theo macOS keyCode → scancode (down/up riêng để giữ phím, lặp đúng).
     // Ổn định cho gõ ASCII/phím tắt/phím đặc biệt. Gõ tiếng Việt (IME) dùng clipboard paste.
-    override func keyDown(with e: NSEvent) { onKey?(e.keyCode, true) }
+    override func keyDown(with e: NSEvent) {
+        rdpLog.info("view keyDown code=\(e.keyCode) keyWin=\(self.window?.isKeyWindow == true) firstResp=\(self.window?.firstResponder === self) onKey=\(self.onKey != nil)")
+        onKey?(e.keyCode, true)
+    }
     override func keyUp(with e: NSEvent) { onKey?(e.keyCode, false) }
 
     private var lastFlags: NSEvent.ModifierFlags = []

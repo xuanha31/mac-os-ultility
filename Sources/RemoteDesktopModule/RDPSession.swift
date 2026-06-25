@@ -364,7 +364,6 @@ final class RDPClient: @unchecked Sendable {
             return
         }
         _ = freerdp_input_send_mouse_event(input, flags, x, y)
-        if flags & 0x8000 != 0 { rdpLog.info("sendMouse click flags=0x\(String(flags, radix: 16)) at \(x),\(y)") }
     }
 
     func sendUnicode(_ code: UInt16, down: Bool) {
@@ -382,7 +381,6 @@ final class RDPClient: @unchecked Sendable {
             return
         }
         _ = freerdp_input_send_keyboard_event_ex(input, down, false, UInt32(rdpScancode))
-        if down { rdpLog.info("sendScancode 0x\(String(rdpScancode, radix: 16)) sent") }
     }
 
     private func cleanup() {
@@ -437,7 +435,6 @@ final class RDPFramebufferNSView: NSView {
     override func mouseDragged(with e: NSEvent)  { let (x, y) = remotePoint(e); onMouse?(0x0800, x, y) }
     override func mouseDown(with e: NSEvent)     {
         window?.makeFirstResponder(self)
-        rdpLog.info("view mouseDown keyWin=\(self.window?.isKeyWindow == true) firstResp=\(self.window?.firstResponder === self) onMouse=\(self.onMouse != nil)")
         let (x, y) = remotePoint(e); onMouse?(0x8000 | 0x1000, x, y)
     }
     override func mouseUp(with e: NSEvent)       { let (x, y) = remotePoint(e); onMouse?(0x1000, x, y) }
@@ -457,7 +454,6 @@ final class RDPFramebufferNSView: NSView {
     // Bàn phím: gửi theo macOS keyCode → scancode (down/up riêng để giữ phím, lặp đúng).
     // Ổn định cho gõ ASCII/phím tắt/phím đặc biệt. Gõ tiếng Việt (IME) dùng clipboard paste.
     override func keyDown(with e: NSEvent) {
-        rdpLog.info("view keyDown code=\(e.keyCode) keyWin=\(self.window?.isKeyWindow == true) firstResp=\(self.window?.firstResponder === self) onKey=\(self.onKey != nil)")
         onKey?(e.keyCode, true)
     }
     override func keyUp(with e: NSEvent) { onKey?(e.keyCode, false) }

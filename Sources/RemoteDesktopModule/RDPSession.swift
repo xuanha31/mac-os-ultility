@@ -187,6 +187,7 @@ final class RDPClient: @unchecked Sendable {
         if h % 2 != 0 { h -= 1 }
         guard w != lastLayoutW || h != lastLayoutH else { return }
         lastLayoutW = w; lastLayoutH = h
+        rdpLog.info("monitorLayout sent \(w)x\(h)")
         var mon = DISPLAY_CONTROL_MONITOR_LAYOUT()
         mon.Flags = UInt32(DISPLAY_CONTROL_MONITOR_PRIMARY)
         mon.Left = 0; mon.Top = 0
@@ -602,10 +603,13 @@ final class RDPSession: RemoteSession {
         view.wantsLayer = true
         view.layer?.contentsGravity = .resize   // kéo đầy khung (khớp cách map toạ độ chuột)
         view.layer?.backgroundColor = NSColor.black.cgColor
-        // KHÔNG live dynamic-resolution: Desktop Sharing không đổi được độ phân giải tuỳ ý của
-        // phiên đang chia sẻ (monitor vật lý/headless cố định mode) → gửi monitor layout làm
-        // lệch độ phân giải/surface → mờ + map chuột sai. Giữ độ phân giải gốc của phiên,
-        // IOSurface co giãn lấp cửa sổ. Muốn nét/to hơn: đổi độ phân giải MÀN HÌNH bên Ubuntu.
+        // Dynamic-resolution cho chế độ Auto: gửi monitor layout theo kích thước cửa sổ. Với
+        // màn HEADLESS (không màn thật, kẹt 1024×768) đây là cách DUY NHẤT để nâng độ phân giải
+        // → gnome resize màn ảo → nét. (View-only phải tắt phía server thì mới điều khiển được.)
+        if (profile.resolution ?? .auto) == .auto {
+            dynamicResize = true
+            view.onResize = { [weak self] w, h in self?.handleResize(pxW: w, pxH: h) }
+        }
         view.onMouse = { [weak client] f, x, y in client?.sendMouse(flags: f, x: x, y: y) }
         view.onKey   = { [weak client] macKeyCode, down in
             guard let rdp = macKeyToRDPScancode[macKeyCode] else { return }

@@ -47,7 +47,7 @@ public final class SignServer {
 
     // MARK: - Đọc & parse request
 
-    private struct Req { let method: String; let path: String; let body: Data }
+    private struct Req { let method: String; let path: String; let body: Data; let host: String }
 
     private func receive(_ conn: NWConnection, buffer: Data) {
         conn.receive(minimumIncompleteLength: 1, maximumLength: 1 << 20) { [weak self] data, _, isComplete, error in
@@ -78,17 +78,20 @@ public final class SignServer {
         let method = String(parts[0])
         let path = String(parts[1])
         var contentLength = 0
+        var host = ""
         for line in lines.dropFirst() {
             let lower = line.lowercased()
             if lower.hasPrefix("content-length:") {
                 contentLength = Int(line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)) ?? 0
+            } else if lower.hasPrefix("host:") {
+                host = line.dropFirst("host:".count).trimmingCharacters(in: .whitespaces)
             }
         }
         let bodyStart = r.upperBound
         let available = buf.distance(from: bodyStart, to: buf.endIndex)
         if available < contentLength { return nil }   // chờ thêm body
         let body = buf.subdata(in: bodyStart..<buf.index(bodyStart, offsetBy: contentLength))
-        return Req(method: method, path: path, body: body)
+        return Req(method: method, path: path, body: body, host: host)
     }
 
     // MARK: - Routing
@@ -135,6 +138,23 @@ public final class SignServer {
             let log = onMain { self.state?.recordLog(id: p[1]) ?? "" }
             return json(["log": log])
         }
+
+        // LiveContainer repo (AltStore-style source) — cài guest app không qua devicectl.
+        if m == "GET", p == ["lc", "source.json"] {
+            let base = req.host.isEmpty ? (onMain { self.state?.lcFallbackBaseURL() } ?? "")
+                                        : "http://\(req.host)"
+            let obj = onMain { self.state?.lcSourceJSON(baseURL: base) ?? [:] }
+            return rawJSON(obj)
+        }
+        if m == "GET", p.count == 3, p[0] == "lc", p[1] == "ipa" {
+            let raw = p[2]
+            let id = raw.hasSuffix(".ipa") ? String(raw.dropLast(4)) : raw
+            guard let fileURL = (onMain { self.state?.guestIPAFileURL(id: id) }),
+                  let data = try? Data(contentsOf: fileURL) else { return notFound() }
+            return binaryResponse(data, contentType: "application/octet-stream",
+                                  filename: fileURL.lastPathComponent)
+        }
+
         return httpResponse(404, "Not Found", Data("{\"error\":\"not found\"}".utf8))
     }
 
@@ -160,6 +180,23 @@ public final class SignServer {
         head += "Content-Length: \(jsonBody.count)\r\n"
         head += "Connection: close\r\n\r\n"
         var d = Data(head.utf8); d.append(jsonBody); return d
+    }
+
+    /// 200 với body JSON dựng từ [String: Any] (dùng cho source AltStore).
+    private func rawJSON(_ obj: Any) -> Data {
+        let body = (try? JSONSerialization.data(withJSONObject: obj, options: [.prettyPrinted]))
+            ?? Data("{}".utf8)
+        return httpResponse(200, "OK", body)
+    }
+
+    /// 200 với body nhị phân (dùng để stream IPA guest).
+    private func binaryResponse(_ body: Data, contentType: String, filename: String? = nil) -> Data {
+        var head = "HTTP/1.1 200 OK\r\n"
+        head += "Content-Type: \(contentType)\r\n"
+        if let filename { head += "Content-Disposition: attachment; filename=\"\(filename)\"\r\n" }
+        head += "Content-Length: \(body.count)\r\n"
+        head += "Connection: close\r\n\r\n"
+        var d = Data(head.utf8); d.append(body); return d
     }
 }
 

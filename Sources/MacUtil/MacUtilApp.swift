@@ -16,8 +16,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.4)  { self.activateMainWindow() }
 
         // Cho phép notification hiện cả khi app đang foreground + xin quyền sớm.
-        UNUserNotificationCenter.current().delegate = self
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        // UNUserNotificationCenter CHỈ dùng được trong .app bundle hợp lệ (có CFBundleIdentifier).
+        // Khi chạy như executable trần (swift run / binary trực tiếp) bundleIdentifier == nil →
+        // gọi currentNotificationCenter sẽ abort() ngay lúc launch. Bỏ qua để không crash.
+        if Bundle.main.bundleIdentifier != nil {
+            UNUserNotificationCenter.current().delegate = self
+            UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        } else {
+            NSLog("[MacUtil] Chạy ngoài .app bundle → bỏ qua UNUserNotificationCenter. Dùng ./run-app.sh để có notification.")
+        }
 
         // Hiện HUD nổi khi chụp xong (chắc chắn, không cần quyền).
         NotificationCenter.default.addObserver(

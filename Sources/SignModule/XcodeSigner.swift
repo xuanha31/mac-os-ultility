@@ -86,21 +86,49 @@ public enum XcodeSigner {
 
     // MARK: - Devices
 
-    /// Liệt kê thiết bị iOS đang kết nối (USB) → (udid, name).
+    /// Liệt kê thiết bị iOS đang kết nối → (udid, name).
+    /// Ưu tiên libimobiledevice (idevice_id, USB thuần); bổ sung bằng devicectl/CoreDevice
+    /// — chính là transport dùng để cài, và hoạt động cả khi libimobiledevice không thấy máy.
     public static func listConnectedDevices() -> [(udid: String, name: String)] {
-        guard let ideviceID = which("idevice_id") else { return [] }
-        guard let r = try? run(ideviceID, ["-l"]), r.code == 0 else { return [] }
-        var devices: [(String, String)] = []
-        for udid in r.out.split(whereSeparator: { $0 == "\n" || $0 == " " }).map(String.init) where !udid.isEmpty {
-            var name = udid
-            if let info = which("ideviceinfo"),
-               let nr = try? run(info, ["-u", udid, "-k", "DeviceName"]), nr.code == 0 {
-                let n = nr.out.trimmingCharacters(in: .whitespacesAndNewlines)
-                if !n.isEmpty { name = n }
+        var byUDID: [String: String] = [:]
+        if let ideviceID = which("idevice_id"), let r = try? run(ideviceID, ["-l"]), r.code == 0 {
+            for udid in r.out.split(whereSeparator: { $0 == "\n" || $0 == " " }).map(String.init) where !udid.isEmpty {
+                var name = udid
+                if let info = which("ideviceinfo"),
+                   let nr = try? run(info, ["-u", udid, "-k", "DeviceName"]), nr.code == 0 {
+                    let n = nr.out.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !n.isEmpty { name = n }
+                }
+                byUDID[udid] = name
             }
-            devices.append((udid, name))
         }
-        return devices
+        for d in listDevicesViaDevicectl() where byUDID[d.udid] == nil {
+            byUDID[d.udid] = d.name
+        }
+        return byUDID.map { (udid: $0.key, name: $0.value) }
+    }
+
+    /// Thiết bị iOS đã pair mà CoreDevice/devicectl biết → (udid, name).
+    static func listDevicesViaDevicectl() -> [(udid: String, name: String)] {
+        let tmp = NSTemporaryDirectory() + "dc-\(UUID().uuidString).json"
+        defer { try? FileManager.default.removeItem(atPath: tmp) }
+        guard let r = try? run("/usr/bin/xcrun", ["devicectl", "list", "devices", "--json-output", tmp]),
+              r.code == 0,
+              let data = FileManager.default.contents(atPath: tmp),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let result = obj["result"] as? [String: Any],
+              let devices = result["devices"] as? [[String: Any]] else { return [] }
+        var out: [(String, String)] = []
+        for dev in devices {
+            let hw = dev["hardwareProperties"] as? [String: Any]
+            let dp = dev["deviceProperties"] as? [String: Any]
+            let cp = dev["connectionProperties"] as? [String: Any]
+            guard (hw?["platform"] as? String)?.lowercased() == "ios",
+                  let udid = hw?["udid"] as? String,
+                  (cp?["pairingState"] as? String)?.lowercased() == "paired" else { continue }
+            out.append((udid, (dp?["name"] as? String) ?? udid))
+        }
+        return out
     }
 
     // MARK: - Stub project (để Xcode sinh provisioning profile)
@@ -110,6 +138,38 @@ public enum XcodeSigner {
             .appendingPathComponent("MacUtil/SignStub", isDirectory: true)
         try? FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
         return base
+    }
+
+    /// Nơi giữ IPA guest (phục vụ cho LiveContainer qua HTTP repo). Không đi qua devicectl.
+    static var guestDir: URL {
+        let d = supportDir.appendingPathComponent("Guests", isDirectory: true)
+        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        return d
+    }
+
+    /// Đọc metadata (bundle id, version, tên hiển thị) từ 1 IPA mà KHÔNG resign.
+    /// Dùng cho guest app của LiveContainer — phục vụ IPA gốc.
+    public static func readIPAInfo(_ ipa: URL) throws -> (bundleID: String, version: String, displayName: String) {
+        let fm = FileManager.default
+        let work = supportDir.appendingPathComponent("lc-info-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: work, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: work) }
+        // chỉ giải nén Info.plist của .app cho nhanh
+        _ = try run("/usr/bin/unzip", ["-q", "-o", ipa.path, "Payload/*.app/Info.plist", "-d", work.path], log: nil)
+        let payload = work.appendingPathComponent("Payload")
+        guard let appName = (try? fm.contentsOfDirectory(atPath: payload.path))?
+                .first(where: { $0.hasSuffix(".app") }) else {
+            throw SignError("Không thấy .app trong IPA (đọc Info.plist thất bại).")
+        }
+        let info = try plistDict(at: payload.appendingPathComponent(appName).appendingPathComponent("Info.plist"))
+        let bid = (info["CFBundleIdentifier"] as? String) ?? ""
+        let ver = (info["CFBundleShortVersionString"] as? String)
+            ?? (info["CFBundleVersion"] as? String) ?? "1.0"
+        let disp = (info["CFBundleDisplayName"] as? String)
+            ?? (info["CFBundleName"] as? String)
+            ?? String(appName.dropLast(4))   // bỏ ".app"
+        guard !bid.isEmpty else { throw SignError("IPA không có CFBundleIdentifier.") }
+        return (bid, ver, disp)
     }
 
     /// Tạo stub Xcode project (1 lần) — bundle id & team override qua command-line khi build.

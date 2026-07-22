@@ -30,6 +30,17 @@ public final class SignState: ObservableObject {
     @Published public var lastAutoRefresh: Date?
     private var autoRefreshTask: Task<Void, Never>?
 
+    /// Báo Telegram cả khi refresh THÀNH CÔNG (mặc định tắt để tránh spam).
+    @Published public var notifyTelegramOnSuccess: Bool = UserDefaults.standard.bool(forKey: "signNotifyTGSuccess") {
+        didSet { UserDefaults.standard.set(notifyTelegramOnSuccess, forKey: "signNotifyTGSuccess") }
+    }
+    /// Lỗi của lần performSign gần nhất (nil nếu thành công). Auto-refresh đọc để gom báo Telegram.
+    public private(set) var lastError: String?
+
+    // LiveContainer: cache IPA guest đã chuẩn bị (phục vụ qua HTTP repo). Không devicectl.
+    @Published public var guestCache: [UUID: GuestIPAInfo] = [:]
+    public let freeSlotLimit = 3
+
     private var store = SignStore()
 
     public init() {
@@ -54,16 +65,77 @@ public final class SignState: ObservableObject {
 
     /// Quét các bản ký sắp hết hạn (<= refreshThresholdDays) và re-sign lặng lẽ.
     /// Không cần 2FA (account ở Xcode) nên chạy nền hoàn toàn tự động.
+    ///
+    /// KHÔNG còn nuốt lỗi: mỗi thất bại trong 1 chu kỳ được gom thành 1 tin Telegram
+    /// (tên app, tên/UDID thiết bị, số ngày còn lại, trích đoạn lỗi). Chỉ xử lý app
+    /// native — guest app do LiveContainer tự quản, không devicectl.
     public func runAutoRefresh() async {
         guard autoRefreshEnabled, !isBusy else { return }
-        let expiring = records.filter { $0.status == "ok" && $0.daysLeft <= refreshThresholdDays }
+        let nativeAppIDs = Set(apps.filter { $0.installMode == .native }.map { $0.id })
+        let expiring = records.filter {
+            $0.status == "ok" && $0.daysLeft <= refreshThresholdDays && nativeAppIDs.contains($0.appID)
+        }
         guard !expiring.isEmpty else { return }
+
+        // Ưu tiên USB: quét thiết bị đang thực sự kết nối để báo lỗi rõ khi không reach được.
+        let connected = await Task.detached { XcodeSigner.listConnectedDevices() }.value
+        let connectedUDIDs = Set(connected.map { $0.udid })
+
+        var failures: [String] = []
+        var succeeded: [String] = []
         for rec in expiring {
             guard let app = apps.first(where: { $0.id == rec.appID }),
                   let device = devices.first(where: { $0.udid == rec.deviceUDID }) else { continue }
-            _ = await performSign(app: app, device: device, quiet: true)
+
+            if !connectedUDIDs.contains(device.udid) {
+                failures.append(failureLine(app: app, device: device, daysLeft: rec.daysLeft,
+                                            detail: "Thiết bị không kết nối (USB). devicectl/xcodebuild cần usbmuxd — cắm cáp rồi thử lại."))
+                continue
+            }
+            let ok = await performSign(app: app, device: device, quiet: true)
+            if ok {
+                succeeded.append(app.name)
+            } else {
+                failures.append(failureLine(app: app, device: device, daysLeft: rec.daysLeft,
+                                            detail: lastError ?? "không rõ (xem log MacUtil)"))
+            }
         }
         lastAutoRefresh = Date()
+
+        if !failures.isEmpty {
+            let header = "🔴 <b>MacUtil — auto-refresh THẤT BẠI</b> (\(failures.count)/\(expiring.count))\n"
+            await sendTelegram(header + "\n" + failures.joined(separator: "\n\n"))
+        } else if notifyTelegramOnSuccess, !succeeded.isEmpty {
+            let names = succeeded.map { TelegramNotifier.esc($0) }.joined(separator: ", ")
+            await sendTelegram("🟢 <b>MacUtil — auto-refresh OK</b>\nĐã gia hạn: \(names)")
+        }
+    }
+
+    /// Một dòng lỗi (HTML) cho tin Telegram gom.
+    private func failureLine(app: SignApp, device: SignDevice, daysLeft: Int, detail: String) -> String {
+        let snippet = String(detail.prefix(400))
+        return "• <b>\(TelegramNotifier.esc(app.name))</b> → \(TelegramNotifier.esc(device.name)) "
+            + "(<code>\(TelegramNotifier.esc(device.udid))</code>), còn \(daysLeft) ngày\n"
+            + "  <i>\(TelegramNotifier.esc(snippet))</i>"
+    }
+
+    /// Gửi Telegram, ghi kết quả vào log MacUtil.
+    private func sendTelegram(_ html: String) async {
+        await TelegramNotifier.send(html) { [weak self] s in
+            Task { @MainActor in self?.appendLog(s) }
+        }
+    }
+
+    /// Gửi 1 tin thử để xác nhận cấu hình telegram.json.
+    public func testTelegram() {
+        Task {
+            let ok = await TelegramNotifier.send(
+                "✅ <b>MacUtil</b> — tin nhắn thử. Cấu hình Telegram hoạt động.") { [weak self] s in
+                Task { @MainActor in self?.appendLog(s) }
+            }
+            setStatus(ok ? "✓ Đã gửi tin thử Telegram."
+                         : "✗ Không gửi được Telegram — kiểm tra telegram.json / xem log.")
+        }
     }
 
     private func persist() {
@@ -116,15 +188,141 @@ public final class SignState: ObservableObject {
         if !devices.contains(where: { $0.udid == d.udid }) { devices.append(d); persist() }
     }
 
-    public func addApp(_ app: SignApp) { apps.append(app); persist() }
+    public func addApp(_ app: SignApp) {
+        // Chỉ 1 app được đánh dấu là LiveContainer host.
+        if app.isLiveContainerHost { for i in apps.indices { apps[i].isLiveContainerHost = false } }
+        apps.append(app); persist()
+    }
     public func updateApp(_ app: SignApp) {
         guard let idx = apps.firstIndex(where: { $0.id == app.id }) else { return }
+        if app.isLiveContainerHost {
+            for i in apps.indices where apps[i].id != app.id { apps[i].isLiveContainerHost = false }
+        }
         apps[idx] = app; persist()
     }
     public func deleteApp(_ app: SignApp) {
         apps.removeAll { $0.id == app.id }
         records.removeAll { $0.appID == app.id }   // dọn bản ghi cài liên quan
+        if let info = guestCache[app.id] { try? FileManager.default.removeItem(atPath: info.localPath) }
+        guestCache.removeValue(forKey: app.id)     // dọn IPA guest đã chuẩn bị
         persist()
+    }
+
+    // MARK: - LiveContainer: slot & host
+
+    /// Số slot native đang chiếm (mỗi app native đã cài = 1). Guest KHÔNG tính.
+    public var usedNativeSlots: Int {
+        let nativeIDs = Set(apps.filter { $0.installMode == .native }.map { $0.id })
+        let occupied = records.filter { $0.status == "ok" && nativeIDs.contains($0.appID) }.map { $0.appID }
+        return Set(occupied).count
+    }
+
+    /// App được đánh dấu là LiveContainer host (nếu có).
+    public var liveContainerHost: SignApp? { apps.first { $0.isLiveContainerHost } }
+
+    /// LiveContainer host đã thực sự cài (có record ok) chưa?
+    public var isLiveContainerInstalled: Bool {
+        guard let host = liveContainerHost else { return false }
+        return records.contains { $0.appID == host.id && $0.status == "ok" }
+    }
+
+    // MARK: - LiveContainer: chuẩn bị guest IPA + repo
+
+    /// Chuẩn bị 1 guest app: resolve IPA về local (KHÔNG resign — LiveContainer tự ký),
+    /// đọc bundle id/version, cache lại để phục vụ qua HTTP repo + AirDrop.
+    public func prepareGuest(_ app: SignApp) {
+        Task { await prepareGuestAsync(app) }
+    }
+
+    @discardableResult
+    func prepareGuestAsync(_ app: SignApp) async -> Bool {
+        guard app.installMode == .liveContainer else { return false }
+        guard !isBusy else { return false }
+        isBusy = true
+        appendLog("=== Chuẩn bị guest '\(app.name)' cho LiveContainer (IPA gốc, không ký) ===\n")
+        let logCb: (String) -> Void = { s in Task { @MainActor [weak self] in self?.appendLog(s) } }
+        do {
+            let ipa = try await resolveIPA(app, log: logCb)
+            let dest = XcodeSigner.guestDir.appendingPathComponent("\(app.id.uuidString).ipa")
+            try? FileManager.default.removeItem(at: dest)
+            try FileManager.default.copyItem(at: ipa, to: dest)
+            let meta = try await Task.detached(priority: .userInitiated) {
+                try XcodeSigner.readIPAInfo(dest)
+            }.value
+            let size = ((try? FileManager.default.attributesOfItem(atPath: dest.path))?[.size] as? NSNumber)?.intValue ?? 0
+            guestCache[app.id] = GuestIPAInfo(appID: app.id, name: app.name, bundleID: meta.bundleID,
+                                              version: meta.version, localPath: dest.path,
+                                              size: size, preparedAt: Date())
+            isBusy = false
+            setStatus("✓ Guest '\(app.name)' sẵn sàng (\(meta.bundleID)). Bật server → thêm source trong LiveContainer, hoặc AirDrop IPA.")
+            return true
+        } catch {
+            appendLog("\n✗ LỖI chuẩn bị guest: \(error)\n")
+            isBusy = false
+            setStatus("✗ \(error)")
+            return false
+        }
+    }
+
+    /// Đường dẫn IPA guest đã chuẩn bị (để UI "Hiện trong Finder" / AirDrop).
+    public func guestIPAPath(_ app: SignApp) -> String? { guestCache[app.id]?.localPath }
+
+    /// URL source (AltStore-style) để dán vào LiveContainer khi server đang chạy.
+    public func lcSourceURLString() -> String? {
+        guard isServerRunning, let ip = macLANAddress() else { return nil }
+        return "http://\(ip):\(serverPort)/lc/source.json"
+    }
+
+    // MARK: - LiveContainer: dữ liệu cho HTTP repo (SignServer gọi)
+
+    private static let ymd: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "yyyy-MM-dd"
+        return f
+    }()
+
+    /// JSON nguồn kiểu AltStore để LiveContainer duyệt & cài guest app.
+    /// (Định dạng AltSource v1 + mảng `versions` v2 để tối đa tương thích;
+    ///  cần kiểm chứng lại trên thiết bị thật với phiên bản LiveContainer đang dùng.)
+    func lcSourceJSON(baseURL: String) -> [String: Any] {
+        let items: [[String: Any]] = guestCache.values.map { g in
+            let dl = "\(baseURL)/lc/ipa/\(g.appID.uuidString).ipa"
+            let date = Self.ymd.string(from: g.preparedAt)
+            return [
+                "name": g.name,
+                "bundleIdentifier": g.bundleID,
+                "developerName": "MacUtil",
+                "version": g.version,
+                "versionDate": date,
+                "downloadURL": dl,
+                "size": g.size,
+                "localizedDescription": "Guest app phục vụ bởi MacUtil cho LiveContainer.",
+                "versions": [[
+                    "version": g.version,
+                    "date": date,
+                    "downloadURL": dl,
+                    "size": g.size,
+                ]],
+            ]
+        }
+        return [
+            "name": "MacUtil — LiveContainer",
+            "identifier": "com.macutil.livecontainer.source",
+            "apps": items,
+        ]
+    }
+
+    /// File IPA guest theo id (SignServer stream bytes). nil nếu chưa chuẩn bị / mất file.
+    func guestIPAFileURL(id: String) -> URL? {
+        guard let uuid = UUID(uuidString: id), let g = guestCache[uuid] else { return nil }
+        let u = URL(fileURLWithPath: g.localPath)
+        return FileManager.default.fileExists(atPath: u.path) ? u : nil
+    }
+
+    /// baseURL dự phòng khi request không kèm Host header.
+    func lcFallbackBaseURL() -> String {
+        "http://\(macLANAddress() ?? "127.0.0.1"):\(serverPort)"
     }
     public func deleteTeam(_ t: SignTeam) { teams.removeAll { $0.teamID == t.teamID }; persist() }
     public func deleteDevice(_ d: SignDevice) { devices.removeAll { $0.udid == d.udid }; persist() }
@@ -144,6 +342,7 @@ public final class SignState: ObservableObject {
         }
         guard !isBusy else { return false }
         isBusy = true
+        lastError = nil
         if !quiet { log = "" }
         appendLog("=== \(quiet ? "[auto] " : "")Ký \(app.name) → \(device.name) (team \(team.teamID)) ===\n")
         let logCb: (String) -> Void = { s in Task { @MainActor [weak self] in self?.appendLog(s) } }
@@ -164,6 +363,7 @@ public final class SignState: ObservableObject {
             return true
         } catch {
             appendLog("\n✗ LỖI: \(error)\n")
+            lastError = "\(error)"
             isBusy = false
             if !quiet { setStatus("✗ \(error)") }
             return false

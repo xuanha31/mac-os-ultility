@@ -9,6 +9,11 @@ import Core
 ///   Khôi phục cấu hình cũ khi tắt toggle. Không phụ thuộc notification khoá màn hình
 ///   (cách cũ phản ứng theo lock+display-sleep đua với OS sleep → gập máy không kịp đổi
 ///   hibernatemode, máy chỉ vào sleep thường với RAM còn cấp điện).
+/// - `hibernatemode 25` chỉ quyết định CÁCH hibernate, KHÔNG quyết định KHI NÀO. Mặc định
+///   macOS trì hoãn vào standby/hibernate tới `standbydelayhigh` (24h) khi pin còn trên
+///   `highstandbythreshold` (50%) → trong lúc chờ, máy chỉ ngủ nông (RAM còn điện) + dark
+///   wake bảo trì hàng giờ làm hao pin. Vì vậy khi bật toggle ta còn ép các tham số standby
+///   (scope pin) về mức "hibernate NGAY, bất kể mức pin".
 @MainActor
 public final class PowerState: ObservableObject {
     private static let hibernateOnLockKey   = "PowerState.hibernateOnLockEnabled"
@@ -16,6 +21,22 @@ public final class PowerState: ObservableObject {
     // khởi động lại (pmset -a cũng bền vững qua reboot).
     private static let savedHibernateModeKey = "PowerState.savedHibernateMode"
     private static let savedTCPKeepAliveKey  = "PowerState.savedTCPKeepAlive"
+    // Dictionary [key: giá trị cũ] của các tham số standby đã ép, để khôi phục khi tắt.
+    private static let savedDeepSleepKey     = "PowerState.savedDeepSleepParams"
+
+    /// Tham số pmset (scope pin) ép máy hibernate SÂU ngay khi ngủ, không phụ thuộc mức pin.
+    /// - forced: giá trị đặt khi BẬT toggle. - fallback: giá trị mặc định macOS, dùng làm
+    ///   giá trị khôi phục nếu không đọc được giá trị hiện tại lúc bật.
+    /// standbydelay* = 0 + highstandbythreshold = 0 → bỏ cơ chế "pin >50% thì trì hoãn 24h".
+    /// powernap/womp = 0 → không dark-wake giữ mạng/bảo trì hao pin trong lúc ngủ.
+    private static let deepSleepParams: [(key: String, forced: Int, fallback: Int)] = [
+        ("standby",              1, 1),
+        ("standbydelayhigh",     0, 86400),
+        ("standbydelaylow",      0, 10800),
+        ("highstandbythreshold", 0, 50),
+        ("powernap",             0, 1),
+        ("womp",                 0, 1),
+    ]
 
     @Published public private(set) var isPreventingSleep = false
     @Published public private(set) var isHibernating = false
@@ -106,11 +127,20 @@ public final class PowerState: ObservableObject {
             // ngủ thay vì dark wake giữ mạng. Best-effort: lỗi cũng không chặn.
             try? controller.setPowerValue("tcpkeepalive", value: 0, scope: "-b")
 
+            // Ép hibernate NGAY khi ngủ, bỏ cơ chế phụ thuộc mức pin: lưu giá trị cũ rồi đặt
+            // giá trị forced. Đọc lỗi → dùng fallback (mặc định macOS) làm giá trị khôi phục.
+            var savedDeep: [String: Int] = [:]
+            for param in Self.deepSleepParams {
+                savedDeep[param.key] = controller.currentPowerValue(param.key) ?? param.fallback
+                try? controller.setPowerValue(param.key, value: param.forced, scope: "-b")
+            }
+
             defaults.set(prevMode, forKey: Self.savedHibernateModeKey)
             defaults.set(prevTCP,  forKey: Self.savedTCPKeepAliveKey)
+            defaults.set(savedDeep, forKey: Self.savedDeepSleepKey)
             isHibernateOnLockEnabled = true
             defaults.set(true, forKey: Self.hibernateOnLockKey)
-            statusMessage = "Đã bật: máy sẽ hibernate (ghi RAM ra đĩa rồi cắt nguồn) mỗi khi ngủ, kể cả khi gập máy."
+            statusMessage = "Đã bật: máy sẽ hibernate SÂU (ghi RAM ra đĩa + cắt nguồn) NGAY mỗi khi ngủ, bất kể mức pin."
         } else {
             // Khôi phục giá trị đã lưu (nếu có). hibernatemode có thể = 0 hợp lệ nên kiểm
             // tra sự tồn tại của key thay vì giá trị.
@@ -122,8 +152,17 @@ public final class PowerState: ObservableObject {
                                              value: defaults.integer(forKey: Self.savedTCPKeepAliveKey),
                                              scope: "-b")
             }
+            // Khôi phục các tham số standby đã ép về giá trị cũ đã lưu (best-effort).
+            if let savedDeep = defaults.dictionary(forKey: Self.savedDeepSleepKey) {
+                for (key, raw) in savedDeep {
+                    if let value = raw as? Int {
+                        controller.restorePowerValue(key, value: value, scope: "-b")
+                    }
+                }
+            }
             defaults.removeObject(forKey: Self.savedHibernateModeKey)
             defaults.removeObject(forKey: Self.savedTCPKeepAliveKey)
+            defaults.removeObject(forKey: Self.savedDeepSleepKey)
             isHibernateOnLockEnabled = false
             defaults.set(false, forKey: Self.hibernateOnLockKey)
             statusMessage = "Đã tắt hibernate khi khoá màn hình (khôi phục cấu hình nguồn cũ)."

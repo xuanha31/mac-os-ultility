@@ -41,10 +41,15 @@ final class PrivilegedHelper: NSObject, MacUtilPrivilegedHelperProtocol {
 
     func setPowerValue(_ key: String, value: Int32, scope: String, withReply reply: @escaping (Bool, String) -> Void) {
         // Whitelist để daemon root không chạy pmset key/scope tuỳ tiện.
+        // `darkwakes` và `dwlinterval` không có trong `man pmset` nhưng pmset vẫn nhận
+        // (kiểm chứng: key sai trả về "Usage:", hai key này trả về "must be run as root").
+        // darkwakes=0 là công tắc trực tiếp chặn dark wake; dwlinterval=0 bỏ khoảng
+        // "darkwakelinger" ~15s mà powerd giữ máy thức thêm sau mỗi lần dark wake.
         let allowedKeys: Set<String> = [
             "hibernatemode", "tcpkeepalive", "standby",
             "standbydelaylow", "standbydelayhigh", "highstandbythreshold",
             "powernap", "autopoweroff", "autopoweroffdelay", "womp",
+            "darkwakes", "dwlinterval", "proximitywake",
         ]
         let allowedScopes: Set<String> = ["-a", "-b", "-c"]
         guard allowedKeys.contains(key) else {
@@ -58,6 +63,15 @@ final class PrivilegedHelper: NSObject, MacUtilPrivilegedHelperProtocol {
         }
         do {
             try run("/usr/bin/pmset", [scope, key, "\(value)"])
+            reply(true, "")
+        } catch {
+            reply(false, "\(error)")
+        }
+    }
+
+    func cancelScheduledWakes(withReply reply: @escaping (Bool, String) -> Void) {
+        do {
+            try run("/usr/bin/pmset", ["schedule", "cancelall"])
             reply(true, "")
         } catch {
             reply(false, "\(error)")

@@ -43,6 +43,12 @@ public struct PrivilegedHelperClient {
         }
     }
 
+    public func cancelScheduledWakes() throws {
+        try call { proxy, reply in
+            proxy.cancelScheduledWakes(withReply: reply)
+        }
+    }
+
     private func call(
         _ body: @escaping (MacUtilPrivilegedHelperProtocol, @escaping (Bool, String) -> Void) -> Void
     ) throws {

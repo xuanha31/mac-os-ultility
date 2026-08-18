@@ -24,18 +24,32 @@ public final class PowerState: ObservableObject {
     // Dictionary [key: giá trị cũ] của các tham số standby đã ép, để khôi phục khi tắt.
     private static let savedDeepSleepKey     = "PowerState.savedDeepSleepParams"
 
-    /// Tham số pmset (scope pin) ép máy hibernate SÂU ngay khi ngủ, không phụ thuộc mức pin.
-    /// - forced: giá trị đặt khi BẬT toggle. - fallback: giá trị mặc định macOS, dùng làm
-    ///   giá trị khôi phục nếu không đọc được giá trị hiện tại lúc bật.
+    /// Tham số pmset ép máy hibernate SÂU ngay khi ngủ và KHÔNG tự thức dậy.
+    /// - forced: giá trị đặt khi BẬT toggle. - fallback: mặc định macOS, dùng làm giá trị
+    ///   khôi phục nếu không đọc được giá trị hiện tại lúc bật.
+    ///
     /// standbydelay* = 0 + highstandbythreshold = 0 → bỏ cơ chế "pin >50% thì trì hoãn 24h".
-    /// powernap/womp = 0 → không dark-wake giữ mạng/bảo trì hao pin trong lúc ngủ.
-    private static let deepSleepParams: [(key: String, forced: Int, fallback: Int)] = [
-        ("standby",              1, 1),
-        ("standbydelayhigh",     0, 86400),
-        ("standbydelaylow",      0, 10800),
-        ("highstandbythreshold", 0, 50),
-        ("powernap",             0, 1),
-        ("womp",                 0, 1),
+    /// powernap/womp/proximitywake = 0 → không dark-wake giữ mạng/bảo trì.
+    ///
+    /// `darkwakes` và `dwlinterval` KHÔNG có trong `man pmset` nhưng pmset vẫn nhận
+    /// (kiểm chứng: key bịa trả về "Usage:", hai key này trả về "must be run as root").
+    /// Đây là thứ powernap=0 không chặn được: powerd tự lập lịch RTC mỗi ~1 tiếng qua
+    /// CoreSmartPowerNap (log ghi `request=CSPNEvaluation`, wake reason `EC.RTC/Maintenance`),
+    /// đo được 8–16 lần thức mỗi đêm. darkwakes=0 nhắm thẳng cơ chế đó; dwlinterval=0 bỏ
+    /// khoảng "darkwakelinger" ~15s powerd giữ máy thức thêm nếu vẫn còn lần thức lọt lưới.
+    ///
+    /// Hai key này không hiện trong `pmset -g custom` nên không đọc được giá trị hiện tại
+    /// → luôn khôi phục về mặc định macOS. Dùng scope `-a`: chúng không nhận scope theo nguồn.
+    private static let deepSleepParams: [(key: String, forced: Int, fallback: Int, scope: String)] = [
+        ("standby",              1, 1,     "-b"),
+        ("standbydelayhigh",     0, 86400, "-b"),
+        ("standbydelaylow",      0, 10800, "-b"),
+        ("highstandbythreshold", 0, 50,    "-b"),
+        ("powernap",             0, 1,     "-b"),
+        ("womp",                 0, 1,     "-b"),
+        ("proximitywake",        0, 1,     "-b"),
+        ("darkwakes",            0, 1,     "-a"),
+        ("dwlinterval",          0, 15,    "-a"),
     ]
 
     @Published public private(set) var isPreventingSleep = false
@@ -129,18 +143,43 @@ public final class PowerState: ObservableObject {
 
             // Ép hibernate NGAY khi ngủ, bỏ cơ chế phụ thuộc mức pin: lưu giá trị cũ rồi đặt
             // giá trị forced. Đọc lỗi → dùng fallback (mặc định macOS) làm giá trị khôi phục.
+            // KHÔNG dùng `try?` ở đây. Một key hỏng (vd pmset từ chối `darkwakes` trên
+            // máy không hỗ trợ) mà im lặng thì người dùng tưởng đã chặn được dark wake,
+            // trong khi máy vẫn thức mỗi tiếng — đúng cái đã tốn hai đêm để phát hiện.
             var savedDeep: [String: Int] = [:]
+            var failedKeys: [String] = []
             for param in Self.deepSleepParams {
                 savedDeep[param.key] = controller.currentPowerValue(param.key) ?? param.fallback
-                try? controller.setPowerValue(param.key, value: param.forced, scope: "-b")
+                do {
+                    try controller.setPowerValue(param.key, value: param.forced, scope: param.scope)
+                } catch {
+                    failedKeys.append(param.key)
+                    Log.core.error("pmset \(param.scope) \(param.key) \(param.forced) lỗi: \(error)")
+                }
             }
+
+            // Báo thức đã lên lịch vẫn đánh thức máy dù darkwakes=0, vì chúng là RTC alarm
+            // do ứng dụng đăng ký chứ không phải dark wake bảo trì. Dọn trước khi ngủ.
+            let wakesCleared = controller.cancelScheduledWakes()
 
             defaults.set(prevMode, forKey: Self.savedHibernateModeKey)
             defaults.set(prevTCP,  forKey: Self.savedTCPKeepAliveKey)
             defaults.set(savedDeep, forKey: Self.savedDeepSleepKey)
             isHibernateOnLockEnabled = true
             defaults.set(true, forKey: Self.hibernateOnLockKey)
-            statusMessage = "Đã bật: máy sẽ hibernate SÂU (ghi RAM ra đĩa + cắt nguồn) NGAY mỗi khi ngủ, bất kể mức pin."
+            var problems: [String] = []
+            if !failedKeys.isEmpty {
+                problems.append("pmset từ chối: \(failedKeys.joined(separator: ", "))")
+            }
+            if !wakesCleared {
+                let remaining = controller.scheduledWakes()
+                problems.append(remaining.isEmpty
+                    ? "không xoá được báo thức (helper cũ? cài lại app)"
+                    : "còn \(remaining.count) báo thức: \(remaining.joined(separator: " | "))")
+            }
+            statusMessage = problems.isEmpty
+                ? "Đã bật: hibernate SÂU ngay khi ngủ, không tự thức, không báo thức chờ."
+                : "Đã bật hibernate sâu NHƯNG chưa trọn vẹn — " + problems.joined(separator: "; ")
         } else {
             // Khôi phục giá trị đã lưu (nếu có). hibernatemode có thể = 0 hợp lệ nên kiểm
             // tra sự tồn tại của key thay vì giá trị.
@@ -153,11 +192,13 @@ public final class PowerState: ObservableObject {
                                              scope: "-b")
             }
             // Khôi phục các tham số standby đã ép về giá trị cũ đã lưu (best-effort).
+            // Phải khôi phục ĐÚNG scope đã dùng lúc set, nếu không darkwakes/dwlinterval
+            // (scope -a) sẽ bị ghi vào scope pin và kẹt ở 0 trên nguồn AC.
             if let savedDeep = defaults.dictionary(forKey: Self.savedDeepSleepKey) {
                 for (key, raw) in savedDeep {
-                    if let value = raw as? Int {
-                        controller.restorePowerValue(key, value: value, scope: "-b")
-                    }
+                    guard let value = raw as? Int else { continue }
+                    let scope = Self.deepSleepParams.first { $0.key == key }?.scope ?? "-b"
+                    controller.restorePowerValue(key, value: value, scope: scope)
                 }
             }
             defaults.removeObject(forKey: Self.savedHibernateModeKey)
@@ -205,6 +246,21 @@ public final class PowerState: ObservableObject {
         isHibernating = true
         // Caffeinate (chống tự ngủ) mâu thuẫn với ý định hibernate-khi-khoá → tắt trước.
         if isPreventingSleep { setPreventSleep(false) }
+
+        // Ba việc phải làm lại ở ĐÚNG thời điểm này, không thể chỉ làm lúc bật toggle:
+        // - darkwakes KHÔNG ghi vào PM plist (khác dwlinterval, dù cùng scope -a): đây là
+        //   thiết lập runtime nên mất sau mỗi lần reboot. Toggle chỉ chạy khi người dùng
+        //   bấm, nên reboot với toggle đang bật sẽ để darkwakes về 1 mà không ai biết.
+        // - dwlinterval đặt lại cho chắc, chi phí bằng không.
+        // - báo thức bị calaccessd/acmd đăng ký lại liên tục trong ngày, nên danh sách
+        //   lúc bật toggle (có thể từ sáng) đã cũ.
+        for key in ["darkwakes", "dwlinterval"] {
+            do { try controller.setPowerValue(key, value: 0, scope: "-a") } catch {
+                Log.core.error("đặt lại \(key)=0 trước khi ngủ lỗi: \(error)")
+            }
+        }
+        controller.cancelScheduledWakes()
+
         controller.sleepNow()   // hibernatemode 25 đã bền vững → ngủ = hibernate, cắt nguồn.
         statusMessage = "Màn hình khoá → đang đưa máy vào hibernate…"
     }

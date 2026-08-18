@@ -146,6 +146,31 @@ public struct PowerController {
         _ = try? helper.setPowerValue(key, value: value, scope: scope)
     }
 
+    /// Xoá báo thức đã lên lịch (`pmset schedule cancelall`). Các alarm kiểu
+    /// `com.apple.alarm.user-invisible-…travelEngine` / `acmd.alarm` sẽ đánh thức máy
+    /// giữa đêm dù đã tắt dark wake, nên phải dọn trước khi ngủ. Best-effort.
+    /// Lưu ý: hệ thống có thể đăng ký lại — nguồn gốc phải tắt trong Calendar/Screen Time.
+    /// Trả về true nếu sau khi gọi thì danh sách báo thức thật sự rỗng. Không dùng
+    /// `try?` trần: helper cũ (chưa cài lại sau khi đổi protocol) sẽ ném lỗi
+    /// "unrecognized selector" và nuốt lỗi ở đây nghĩa là người dùng tưởng đã tắt
+    /// mà thực tế máy vẫn bị đánh thức.
+    @discardableResult
+    public func cancelScheduledWakes() -> Bool {
+        do { try helper.cancelScheduledWakes() } catch {
+            Log.core.error("cancelScheduledWakes lỗi: \(error)")
+            return false
+        }
+        return scheduledWakes().isEmpty
+    }
+
+    /// Danh sách báo thức đang chờ, để hiển thị/chẩn đoán. Không cần admin.
+    public func scheduledWakes() -> [String] {
+        guard let output = try? runPipe("/usr/bin/pmset", ["-g", "sched"]) else { return [] }
+        return output.split(separator: "\n")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { $0.hasPrefix("[") }
+    }
+
     // MARK: - Helpers
 
     /// Chạy tiến trình, gom stdout+stderr, ném lỗi nếu status != 0.
